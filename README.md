@@ -1,6 +1,6 @@
-# WirelessDisplay
+# ViewHop
 
-WirelessDisplay is an open-source Linux desktop application for sharing a laptop
+ViewHop is an open-source Linux desktop application for sharing a laptop
 or desktop screen with Miracast/Wi-Fi Display TVs and receivers over Wi-Fi Direct.
 Its primary goal is to make wireless screen sharing practical across Linux
 desktops, with screen and audio sharing as the long-term goal.
@@ -132,7 +132,7 @@ authorization for network operations.
 To share your screen:
 
 1. Enable Screen Share/Miracast on the TV.
-2. Open WirelessDisplay and choose **Search for devices**.
+2. Open ViewHop and choose **Search for devices**.
 3. Set **Preferred resolution** before connecting; 720p/30 fps is the default.
 4. Choose **Share screen** for an available receiver and authorize capture if
    the portal asks. The app prepares capture and tests encoders before activating P2P.
@@ -207,8 +207,8 @@ requires Python 3.11 or newer. Then run:
 
 ```sh
 python3 scripts/generate-cargo-sources.py
-flatpak-builder --user --install --force-clean build-dir flatpak/org.example.WirelessDisplay.yml
-flatpak run org.example.WirelessDisplay
+flatpak-builder --user --install --force-clean build-dir flatpak/org.example.ViewHop.yml
+flatpak run org.example.ViewHop
 ```
 
 The manifest builds pinned Cargo sources offline after downloading them. This
@@ -232,4 +232,4 @@ plugins, and Rust dependencies retain their own licenses; see [LICENSES.md](LICE
 
 ## Acknowledgments
 
-WirelessDisplay was built with assistance from OpenAI Codex.
+ViewHop was built with assistance from OpenAI Codex.
