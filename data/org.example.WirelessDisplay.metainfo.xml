@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.example.WirelessDisplay</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>WirelessDisplay</name>
+  <summary>Share your screen with Wi-Fi displays</summary>
+  <developer id="org.example"><name>WirelessDisplay contributors</name></developer>
+  <description>
+    <p>Experimental Linux desktop application for video-only Miracast streaming over Wi-Fi Direct, using XDG Desktop Portal, PipeWire and GStreamer.</p>
+    <p>Negotiates Wi-Fi Display over RTSP and transmits H.264 in MPEG-TS/RTP. Television interoperability remains experimental. Audio, HDCP and UIBC are not enabled. A dummy mode supports development without wireless display hardware.</p>
+  </description>
+  <launchable type="desktop-id">org.example.WirelessDisplay.desktop</launchable>
+  <provides><binary>wireless-display</binary></provides>
+  <content_rating type="oars-1.1"/>
+  <releases><release version="0.2.0" date="2026-10-23" type="development"/><release version="0.1.0" date="2026-10-17" type="development"/></releases>
+</component>

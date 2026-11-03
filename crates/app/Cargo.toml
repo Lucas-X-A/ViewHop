@@ -1,0 +1,26 @@
+[package]
+name = "wireless-display-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wireless-display"
+path = "src/main.rs"
+
+[dependencies]
+wireless-display-core.workspace = true
+wireless-display-platform.workspace = true
+wireless-display-media.workspace = true
+gtk.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+async-channel.workspace = true
+futures-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

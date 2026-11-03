@@ -1,0 +1,26 @@
+name: Rust Linux
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Native libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav xvfb dbus-x11
+      - run: cargo fmt --all --check
+      - run: cargo check --workspace --locked
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: GTK_A11Y=none xvfb-run -a -s '-screen 0 1920x1080x24' dbus-run-session --config-file=crates/app/tests/session-bus.conf -- cargo test -p wireless-display-app --test gtk_smoke --test gtk_presentation -- --ignored --test-threads=1
+      - run: xvfb-run -a dbus-run-session --config-file=crates/app/tests/session-bus.conf -- cargo test -p wireless-display-app --test x11_fallback -- --ignored
+      - run: xvfb-run -a cargo test -p wireless-display-media --test x11_capture -- --ignored
+      - run: dbus-run-session --config-file=crates/app/tests/session-bus.conf -- cargo test -p wireless-display-platform --lib on_dbus -- --ignored --test-threads=1
+      - name: Check offline source list
+        run: |
+          python3 scripts/generate-cargo-sources.py
+          git diff --exit-code -- flatpak/cargo-sources.json

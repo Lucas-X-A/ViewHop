@@ -1,0 +1,20 @@
+[package]
+name = "wireless-display-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+wireless-display-core.workspace = true
+ashpd.workspace = true
+zbus.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+async-channel.workspace = true
+futures-util.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

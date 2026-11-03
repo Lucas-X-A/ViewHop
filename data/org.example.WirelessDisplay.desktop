@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=WirelessDisplay
+Comment=Share your screen with Wi-Fi displays
+Exec=wireless-display
+Icon=org.example.WirelessDisplay
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=Miracast;Wi-Fi;Display;Screen;Cast;
+StartupNotify=true

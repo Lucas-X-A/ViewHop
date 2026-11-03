@@ -1,0 +1,51 @@
+app-id: org.example.WirelessDisplay
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: wireless-display
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --system-talk-name=org.freedesktop.NetworkManager
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/wireless-display/cargo
+modules:
+  - name: gst-ximagesrc
+    buildsystem: meson
+    config-opts:
+      - -Dauto_features=disabled
+      - -Dximagesrc=enabled
+      - -Dtests=disabled
+      - -Dexamples=disabled
+      - -Ddoc=disabled
+      - -Dnls=disabled
+    sources:
+      - type: archive
+        url: https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.28.8.tar.xz
+        sha256: a7670ed900d3d03be744d25c1873b239896e9a82ce6d17f8febc6fffbaee9521
+  - name: wireless-display
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --locked --offline -p wireless-display-app
+      - install -Dm755 target/release/wireless-display /app/bin/wireless-display
+      - install -Dm644 data/org.example.WirelessDisplay.desktop /app/share/applications/org.example.WirelessDisplay.desktop
+      - install -Dm644 data/org.example.WirelessDisplay.metainfo.xml /app/share/metainfo/org.example.WirelessDisplay.metainfo.xml
+      - install -Dm644 data/icons/org.example.WirelessDisplay.svg /app/share/icons/hicolor/scalable/apps/org.example.WirelessDisplay.svg
+      - install -Dm644 LICENSE /app/share/licenses/wireless-display/LICENSE
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - target
+          - .git
+          - .flatpak-builder
+          - build-dir
+          - repo
+      - cargo-sources.json
