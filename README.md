@@ -201,6 +201,22 @@ hardware tests have separate environment requirements. See
 [TESTING.md](docs/TESTING.md) for how to run them and distinguish virtual tests
 from physical validation.
 
+## Dependency updates
+
+[Dependabot](.github/dependabot.yml) checks Rust dependencies (including transitive
+dependencies) and GitHub Actions weekly and opens update pull requests. To activate
+it, commit the configuration to the repository's default branch on GitHub.
+
+When a pull request changes `Cargo.lock`, regenerate the offline Flatpak source
+list and commit `flatpak/cargo-sources.json` to the same branch:
+
+```sh
+python3 scripts/generate-cargo-sources.py
+```
+
+Dependabot does not run this project script. CI checks that the generated source
+list matches `Cargo.lock` before a dependency update is merged.
+
 ## Local Flatpak build
 
 Flatpak packaging is experimental. Install flatpak-builder, configure Flathub,
