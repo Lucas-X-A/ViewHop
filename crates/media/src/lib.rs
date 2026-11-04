@@ -1,5 +1,7 @@
 pub mod encoder;
 pub mod pipeline;
+mod processing;
+pub use processing::{CaptureMemory, VideoProcessing};
 mod quality;
 pub use quality::PreparedFormat;
 pub mod streaming;

@@ -546,6 +546,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "gstreamer-net"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abcad04d471a4f2c859ef1287f22581b07064e357cc89dfa415ffc99b2a3193d"
+dependencies = [
+ "gio",
+ "glib",
+ "gstreamer",
+ "gstreamer-net-sys",
+]
+
+[[package]]
+name = "gstreamer-net-sys"
+version = "0.25.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4947dae0cfdeec4c1146df7f89c1a8494a333197fac2ccf0921cf9a6b61e2291"
+dependencies = [
+ "gio-sys",
+ "glib-sys",
+ "gstreamer-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
 name = "gstreamer-sys"
 version = "0.25.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1410,6 +1435,7 @@ dependencies = [
  "futures-util",
  "gio",
  "gstreamer",
+ "gstreamer-net",
  "thiserror",
  "tokio",
  "tokio-util",

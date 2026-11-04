@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 wireless-display-core.workspace = true
 gst.workspace = true
+gst-net.workspace = true
 gio.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

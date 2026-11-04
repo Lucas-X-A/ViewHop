@@ -74,6 +74,22 @@ These addresses and prefix belong to the observed case. On another host/group,
 check the actual interface and IPv4 before adapting the rule. The app does not
 run these commands or change the firewall. The firewall remains active.
 
+**TV stutters while encoding stays near 30 fps:** local encoded FPS does not
+measure playback on the receiver. Check fresh RTCP loss in DEBUG statistics.
+`loss_percent=None` means no new valid report, not zero loss. RTCP negotiation
+alone does not prove that feedback reaches the app.
+
+If the kernel journal reports `[UFW BLOCK]` with the TV's IP, `PROTO=UDP`, and
+the current local RTCP destination port, feedback is blocked by the firewall.
+The TV may send it from a different port than its advertised receive port, so
+outbound RTCP does not necessarily create a matching firewall return flow.
+An administrator can allow inbound UDP restricted to the current P2P interface,
+TV IP, local group IP, and reserved local RTCP port. Do not require the TV's
+source port to match its advertised receive port. The local port and group
+interface can change each session; remove a temporary rule after the test.
+The app does not modify UFW. Allowing RTCP enables measurement and adaptation;
+it does not by itself establish or fix the cause of receiver stutters.
+
 **Encoder unavailable:** having a factory in the registry is not enough. Before
 P2P, the app tests encoding per profile and can discard unusable hardware encoders.
 Install a compatible encoder (for example, OpenH264 or x264) as a fallback.

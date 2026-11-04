@@ -1,5 +1,6 @@
-use crate::streaming;
-use crate::{GstMediaPipeline, MediaError};
+use crate::encoder::set_bitrate;
+use crate::{EncoderInputFormat, GstMediaPipeline, MediaError, VideoProcessing};
+use gio::prelude::{InetAddressExt, InetSocketAddressExt};
 use gst::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -64,12 +65,17 @@ impl Telemetry {
         }
     }
 
-    pub fn watch_rtcp(self: &Arc<Self>, src: &gst::Element, ssrc: u32) {
+    pub fn watch_rtcp(self: &Arc<Self>, src: &gst::Element, ssrc: u32, peer: gio::InetAddress) {
         let telemetry = self.clone();
         if let Some(pad) = src.static_pad("src") {
             pad.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
-                if let Some(buffer) = info.buffer()
-                    && let Ok(map) = buffer.map_readable()
+                // Reject other senders before both telemetry and rtpbin. SETUP
+                // specifies the TV's receive port, not its feedback source port.
+                let Some(buffer) = info.buffer().filter(|buffer| rtcp_from_peer(buffer, &peer))
+                else {
+                    return gst::PadProbeReturn::Drop;
+                };
+                if let Ok(map) = buffer.map_readable()
                     && let Some((sequence, loss)) = receiver_report(&map, ssrc)
                     && let Ok(mut report) = telemetry.report.lock()
                     && report
@@ -119,8 +125,15 @@ impl Telemetry {
     }
 }
 
+fn rtcp_from_peer(buffer: &gst::BufferRef, peer: &gio::InetAddress) -> bool {
+    buffer
+        .meta::<gst_net::NetAddressMeta>()
+        .and_then(|meta| meta.addr().downcast::<gio::InetSocketAddress>().ok())
+        .is_some_and(|sender| sender.address().equal(peer))
+}
+
 /// Validate a compound RTCP packet before accepting a report about our SSRC.
-/// The caller also filters the negotiated source IP and port with a connected socket.
+/// The caller first filters sender metadata against the RTSP peer's IP address.
 fn receiver_report(mut bytes: &[u8], ssrc: u32) -> Option<(u32, u8)> {
     let mut found = None;
     while !bytes.is_empty() {
@@ -165,14 +178,24 @@ fn receiver_report(mut bytes: &[u8], ssrc: u32) -> Option<(u32, u8)> {
 
 pub(crate) struct StreamingControl {
     raw: gst::Element,
+    input_format: EncoderInputFormat,
+    processing: VideoProcessing,
     gate: Arc<FormatGate>,
     pub telemetry: Arc<Telemetry>,
 }
 
 impl StreamingControl {
-    pub fn new(raw: gst::Element, gate: gst::Pad, telemetry: Arc<Telemetry>) -> Self {
+    pub fn new(
+        raw: gst::Element,
+        input_format: EncoderInputFormat,
+        processing: VideoProcessing,
+        gate: gst::Pad,
+        telemetry: Arc<Telemetry>,
+    ) -> Self {
         Self {
             raw,
+            input_format,
+            processing,
             gate: Arc::new(FormatGate {
                 pad: gate,
                 probe: Mutex::new(None),
@@ -227,10 +250,10 @@ pub(crate) fn frame_rates(mode: VideoMode) -> gst::List {
     }
 }
 
-pub(crate) fn raw_caps(video: VideoFormat) -> gst::Caps {
+pub(crate) fn raw_caps(video: VideoFormat, input_format: EncoderInputFormat) -> gst::Caps {
     let (width, height) = video.mode.size();
     gst::Caps::builder("video/x-raw")
-        .field("format", "I420")
+        .field("format", input_format.name())
         .field("width", width as i32)
         .field("height", height as i32)
         .field("framerate", frame_rates(video.mode))
@@ -241,7 +264,7 @@ pub(crate) fn raw_caps(video: VideoFormat) -> gst::Caps {
 impl GstMediaPipeline {
     /// Changes the encoder target without renegotiating the video format.
     pub fn set_bitrate(&self, kbps: u32) -> Result<(), MediaError> {
-        streaming::set_bitrate(self.encoder.as_ref().ok_or(MediaError::NoEncoder)?, kbps)
+        set_bitrate(self.encoder.as_ref().ok_or(MediaError::NoEncoder)?, kbps)
     }
 
     /// Blocks one raw frame and reports its MPEG-TS timestamp for RTSP M4.
@@ -320,9 +343,12 @@ impl GstMediaPipeline {
     pub fn commit_format(&self, prepared: PreparedFormat) -> Result<(), MediaError> {
         let control = self.control.as_ref().ok_or(MediaError::NoEncoder)?;
         self.set_bitrate(prepared.target.bitrate_kbps)?;
-        control
-            .raw
-            .set_property("caps", raw_caps(prepared.target.video));
+        control.raw.set_property(
+            "caps",
+            control
+                .processing
+                .encoder_caps(prepared.target.video, control.input_format),
+        );
         self.request_keyframe();
         let _ = control.telemetry.sample();
         // Release only after caps and the keyframe request have been installed.
@@ -335,6 +361,25 @@ impl GstMediaPipeline {
 mod tests {
     use super::*;
     use wireless_display_core::traits::MediaPipeline;
+
+    #[test]
+    fn rtcp_requires_peer_address_metadata_but_not_a_fixed_source_port() {
+        gst::init().unwrap();
+        let peer = gio::InetAddress::from_string("127.0.0.1").unwrap();
+        let mut buffer = gst::Buffer::new();
+        assert!(!rtcp_from_peer(&buffer, &peer));
+        for (address, port, accepted) in [
+            ("127.0.0.1", 53009, true),
+            ("127.0.0.1", 52486, true),
+            ("127.0.0.2", 53009, false),
+            ("::1", 53009, false),
+        ] {
+            let sender = gio::InetSocketAddress::from_string(address, port).unwrap();
+            buffer = gst::Buffer::new();
+            gst_net::NetAddressMeta::add(buffer.get_mut().unwrap(), &sender);
+            assert_eq!(rtcp_from_peer(&buffer, &peer), accepted);
+        }
+    }
     #[test]
     fn sixty_fps_accepts_5994_but_cannot_duplicate_a_thirty_hz_source() {
         gst::init().unwrap();
@@ -360,7 +405,7 @@ mod tests {
                 level: 2,
                 r2: false,
             };
-            output.set_property("caps", raw_caps(format));
+            output.set_property("caps", raw_caps(format, EncoderInputFormat::I420));
             let sink = crate::pipeline::element("fakesink").unwrap();
             sink.set_property("sync", false);
             let pipeline = gst::Pipeline::new();

@@ -585,6 +585,7 @@ pub fn build(
                     let resolution_modes = resolution_modes.clone();
                     connect.connect_clicked(move |_| {
                         let mode = resolution_modes.borrow().get(resolution.selected() as usize).copied().unwrap_or_default();
+                        tracing::info!(target: "wireless_display::ui", requested_mode = ?mode, selected_index = resolution.selected(), "Starting sharing with the selected video preference");
                         notice.set_text("");
                         send(&commands, AppCommand::Connect(id.clone(), mode), &notice);
                     });

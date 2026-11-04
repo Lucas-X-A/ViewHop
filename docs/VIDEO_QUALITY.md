@@ -227,3 +227,107 @@ loss. Tests did not capture personal content or connect to the TV.
 Local artifacts: `/tmp/wireless-display-720-quality/quality-comparison.json`,
 `results.json`, `thread-results.json`, `final-results.json`, and the corresponding
 synthetic scripts/patterns. The new behavior still needs a physical retest.
+
+## Full HD sharpness and receiver stutters — 2026-11-03
+
+The first supplied screenshot/log showed 1280×720 at 30 fps and 4 Mbit/s, with
+only Hd/Vga offers. It did not record the requested preference or capture size,
+so the reason Full HD was absent cannot be established retrospectively.
+Added diagnostics now record the selected preference, capture geometry, tested
+offer, and RTCP negotiation without recording screen content or RTSP bodies.
+
+The user's next attempt confirmed FullHd selection, 1920×1080 capture, an x264
+Full HD offer, and negotiation at 30 fps with an 8 Mbit/s target and RTCP enabled.
+The supplied measurement windows showed approximately 30 input/encoded fps,
+zero local drops, and no fresh RTCP reports. The user confirmed good sharpness
+but reported stutters on the TV. This evidence shifts the remaining investigation
+to transport/receiver behavior; it does not measure the TV's displayed FPS.
+
+A read-only socket/kernel-journal observer correlated a UFW UDP block with the
+app's RTCP socket on the P2P interface. The TV's source port differed from the
+negotiated receive port. No packet payload was captured, so this observation
+alone does not prove that the blocked datagram contained a valid Receiver Report.
+The app also connected its UDP socket to the advertised port, which would discard
+feedback from another source port even if UFW allowed it. RTSP Transport ports
+describe receiving ports, not mandatory feedback source ports.
+
+The media fix leaves the RTCP socket unconnected and checks udpsrc sender metadata
+against the RTSP peer's IP before telemetry and rtpbin. Outgoing RTCP still goes
+to the negotiated port. Missing metadata and other IPs are rejected; compound
+packet bounds, SSRC validation, and fresh-sequence checks remain. Safe bindings
+from gstreamer-net expose the metadata without project-owned unsafe code.
+
+The loopback regression timed out before the fix when a valid report came from
+a separate sending port. After the fix, all ten media unit tests passed, including
+that exchange and rejection of another source IP. Metadata tests also reject
+missing addresses and the wrong address family. No queues, Rust video-frame copies,
+encoder settings, or adaptive bitrate thresholds were added or changed. RAM use
+was not benchmarked comparatively.
+The default workspace suite passed 53 tests, with ten environment-dependent tests
+ignored. Workspace check, Clippy with warnings denied, formatting, and the native
+app build passed. Flatpak sources match the lockfile; only the two new binding
+crates were added, with no existing package version changes.
+
+UFW remains unchanged. A physical retest with a narrowly allowed RTCP return path
+must verify valid reports and whether the TV's stutters improve. Missing feedback
+keeps the current controller conservative at 8 Mbit/s; it does not prove that
+raising bitrate will improve smoothness or that this fix alone resolves stutters.
+
+## Encoder-specific inputs and latency settings — 2026-11-04
+
+The previous pipeline forced I420 for every encoder, although modern VA/NV/QSV
+encoders can require NV12. Media now selects a supported 8-bit 4:2:0 input from
+the encoder's sink caps, preferring NV12 for hardware and retaining I420 for the
+software encoders. Preflight validates that selection, including live resolution
+fallback/recovery. The selected input is retained for subsequent resolution changes.
+
+Encoder configuration and bitrate units/mutability now belong to the encoder
+module. VA, legacy VA-API, NVENC, and QSV use their own GOP, no-B-frame, rate-control,
+and low-latency controls. QSV's CABAC enum is handled explicitly. Unsupported
+required settings reject the candidate rather than silently doing nothing;
+software alternatives remain available. The adaptive bitrate policy is unchanged.
+
+INFO diagnostics log negotiated input format, geometry, frame rate, and caps
+memory features at capture and encoder input. They do not log frame contents.
+Conversion/scaling still uses system memory; DMA-BUF/GPU processing is a separate
+step. No raw frame queues, receive threads, or Rust frame copies were added.
+Comparative RAM use, GPU performance, and physical TV smoothness were not measured.
+
+The default workspace suite passed 56 tests, with ten environment-dependent tests
+ignored. New coverage includes NV12-only input selection, software preference,
+invalid controls, rejection of GPU-only caps, and software fallback after an
+unusable candidate. A real x264/NV12 pipeline encoded, transported, and decoded
+video while changing bitrate to 16 Mbit/s and switching 1080p/720p/1080p with
+the same pixel format, exact PES timing, and cancellable frame gating.
+
+## Optional GPU processing and capture import — 2026-11-04
+
+Media now offers optional VA/VAMemory, legacy VA-API/VASurface, and CUDA/CUDAMemory
+conversion/scaling paths matched to the encoder's caps. CPU conversion/scaling
+remains available, including hardware encoding from system memory and complete
+x264/OpenH264 alternatives. Selection does not depend on CPU vendor or model.
+The same tested path and memory contract remain in use during resolution changes.
+
+Synthetic preflight now uses the streaming pacing/queue stages, validates GPU
+input caps, exercises the Full HD target at 8 and 16 Mbit/s, and tests resolution
+fallback/recovery. Before P2P, app coordination also validates an encoded frame
+from the already authorized capture. PipeWire tries explicit DMA-BUF import,
+then system-memory capture/upload. Each attempt renews the restricted remote in
+the same portal session. Rejected encoder/path pairs are excluded only during
+that preparation; other GPU paths and every CPU path remain eligible. A sparse
+static portal stream needs only one encoded frame for import validation, while
+cadence is checked by the synthetic test and runtime telemetry.
+
+Default tests cover plugin-dependent selection, memory-feature isolation, DRM
+modifier preservation, bounded queues, cancellation, and CPU operation after
+exclusions, alongside the existing real encode/transport/decode tests. The
+workspace suite passed 60 tests; eleven environment-dependent tests were ignored,
+including the new synthetic GPU test. Formatting, workspace check, Clippy with
+warnings denied, and the native binary build passed.
+
+GPU devices are visible outside the sandbox, but usable VA/CUDA postprocessor
+factories were not exposed by the installed plugins in this environment. No
+physical GPU/DMA-BUF success, battery savings, or RAM reduction is claimed.
+No screen capture or TV connection was initiated by these tests. No driver,
+firewall, scheduler, or CPU-specific compiler setting was changed. Optional
+hardware validation and power/memory measurements remain manual target-host work.

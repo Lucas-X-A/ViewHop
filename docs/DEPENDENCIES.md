@@ -8,6 +8,7 @@ were verified in the published crate sources before writing Cargo.toml.
 | gtk4 | 0.11.5 | glib/gio 0.22; Rust >= 1.92; GTK 4.8 feature |
 | glib / gio | 0.22.10 | Same GTK/GStreamer family; direct gio dependency in media for sockets |
 | gstreamer | 0.25.4 | glib 0.22; Rust >= 1.92; Gst 1.22 feature |
+| gstreamer-net | 0.25.0 | Added 2026-11-03; gst 0.25 / gio 0.22; safe sender-address metadata |
 | ashpd | 0.13.13 | tokio runtime; zbus ^5.13; Rust >= 1.87 |
 | zbus | 5.19.0 | Latest stable 5.x compatible with ashpd at the time; 6.0 exists |
 | tokio / tokio-util | 1.53.3 / 0.7.20 | Runtime separate from GTK |
@@ -25,10 +26,25 @@ Its safe Socket::from_fd API takes already reserved UDP sockets, avoiding projec
 unsafe code and port allocation races when configuring udpsink/udpsrc. Core uses tracing
 to log RTSP methods and sequence numbers without logging bodies, Session, or credentials.
 
+gstreamer-net provides the safe NetAddressMeta API used to restrict incoming RTCP
+to the TV's IP without requiring a fixed source port. It uses libgstnet from the
+GStreamer core development package, already used by the UDP plugin. It adds no
+video-frame copies, queues, or receive thread; the existing unsafe-code ban remains.
+
+Optional native GPU processing uses vapostproc (VA/QSV), vaapipostproc (legacy
+VA-API), or cudaupload plus cudaconvertscale (NVENC). These factories and compatible
+GPU memory caps must be available and pass the live preflight. Older GStreamer
+versions or systems without the plugins retain CPU conversion/scaling and software
+encoding alternatives. No new Rust dependency or CPU-specific compiler flag is
+required. Hardware inside Flatpak also depends on the runtime/driver extensions.
+
 Documentation consulted:
 
 - https://docs.rs/gtk4/0.11.5/
 - https://docs.rs/gstreamer/0.25.4/
+- https://gstreamer.freedesktop.org/documentation/va/vapostproc.html
+- https://gstreamer.freedesktop.org/documentation/nvcodec/cudaconvertscale.html
+- https://gstreamer.freedesktop.org/documentation/additional/design/dmabuf.html
 - https://docs.rs/ashpd/0.13.13/ashpd/desktop/screencast/
 - https://docs.rs/zbus/5.19.0/
 - https://networkmanager.dev/docs/api/latest/gdbus-org.freedesktop.NetworkManager.Device.WifiP2P.html

@@ -129,6 +129,34 @@ rejection, and 1080p/720p/1080p switching with decoding, IDR, actual PES PTS, an
 cancellation during a blocked frame. They do not capture the user's screen or
 connect to a TV. Modes above Full HD still need physical validation.
 
+Encoder tests cover an NV12-only sink, software I420 preference, rejection of
+GPU-only input caps by the current system-memory path, invalid properties, and
+software fallback after a rejected candidate. The live Full HD test also feeds
+NV12 through x264, changes bitrate to 16 Mbit/s, decodes RTP, and verifies that
+1080p/720p/1080p switching retains the selected pixel format and exact PES timing.
+These tests do not prove that a particular GPU/driver can encode the same stream.
+
+Optional GPU processing has a separate synthetic test. Run only on a host with
+a compatible GPU, driver, live-mutable encoder, and postprocessor plugins:
+
+```sh
+cargo test --locked -p wireless-display-media --lib streaming::tests::gpu_processing_encodes_and_preserves_live_bitrate_and_resolution_changes -- --ignored --exact
+```
+
+It requires a validated GPU path and exercises conversion/scaling, encoding,
+the Full HD target at 8/16 Mbit/s, and 1080p/720p/1080p caps changes. It does not
+capture the screen or connect to a receiver. Default tests cover plugin-dependent
+selection, CPU retention, incompatible memory contracts, DRM modifier preservation,
+bounded pacing queues, cancellation, and software operation after GPU exclusions.
+
+For a manual portal test, inspect `GPU processing validated on authorized capture`
+and the subsequent `Negotiated video input` logs. DMA-BUF is accepted only after
+a frame from the authorized stream was encoded using that memory contract.
+System-memory capture/upload is a supported fallback. Confirm actual GPU input
+features, mode, FPS, drops, and shutdown. Compare CPU, whole-system power, RAM
+(including shared GPU buffers), sharpness, and latency against the CPU path;
+successful negotiation alone is not evidence of a measured performance gain.
+
 ## Smoothness test: 720p/60 and 1080p/30
 
 Choose **720p at 60 fps — smoother motion** or **1080p — Full HD** before

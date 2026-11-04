@@ -1,5 +1,9 @@
+use crate::encoder::set_bitrate;
 use crate::pipeline;
-use crate::{EncoderSelector, GstMediaPipeline, MediaError};
+use crate::{
+    CaptureMemory, EncoderInputFormat, EncoderSelector, GstMediaPipeline, MediaError,
+    VideoProcessing,
+};
 use gst::glib::translate::IntoGlib;
 use gst::prelude::*;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
@@ -14,6 +18,9 @@ use wireless_display_core::traits::MediaPipeline;
 #[derive(Clone, Debug)]
 pub struct EncoderChoice {
     pub name: String,
+    pub input_format: EncoderInputFormat,
+    pub processing: VideoProcessing,
+    pub capture_memory: CaptureMemory,
     pub offer: VideoOffer,
 }
 
@@ -22,6 +29,39 @@ pub struct CaptureFormat {
     pub pixels: (u32, u32),
     /// Source caps accept nominal p60 or 59.94 Hz, possibly after renegotiation.
     pub supports_60fps: bool,
+}
+
+fn watch_video_caps(
+    element: &gst::Element,
+    pad_name: &str,
+    stage: &'static str,
+    encoder: &str,
+) -> Result<(), MediaError> {
+    let pad = element.static_pad(pad_name).ok_or(MediaError::NoEncoder)?;
+    let encoder = encoder.to_owned();
+    pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_, info| {
+        if let Some(event) = info.event()
+            && let gst::EventView::Caps(event) = event.view()
+            && let Some(video) = event.caps().structure(0)
+        {
+            // Record negotiated metadata only. Caps features describe the memory
+            // contract, not proof of zero-copy or a physical VRAM allocation.
+            let features = event
+                .caps()
+                .features(0)
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            tracing::info!(target: "wireless_display::media", stage, %encoder,
+                raw_format = video.get::<&str>("format").unwrap_or("unknown"),
+                width = ?video.get::<i32>("width").ok(),
+                height = ?video.get::<i32>("height").ok(),
+                framerate = ?video.get::<gst::Fraction>("framerate").ok(),
+                memory_features = %features,
+                "Negotiated video input");
+        }
+        gst::PadProbeReturn::Ok
+    });
+    Ok(())
 }
 
 pub struct RtpSockets {
@@ -66,82 +106,25 @@ impl RtpSockets {
     }
 }
 
-fn set_uint(element: &gst::Element, name: &str, value: u32) {
-    if let Some(property) = element.find_property(name) {
-        if property.value_type() == u32::static_type() {
-            element.set_property(name, value);
-        } else if property.value_type() == i32::static_type() && value <= i32::MAX as u32 {
-            element.set_property(name, value as i32);
-        }
-    }
-}
-
-fn configured_encoder(
-    choice: &EncoderChoice,
-    video: VideoFormat,
-) -> Result<gst::Element, MediaError> {
-    let encoder = pipeline::element(&choice.name)?;
-    match choice.name.as_str() {
-        "x264enc" => {
-            encoder.set_property_from_str("tune", "zerolatency");
-            encoder.set_property_from_str(
-                "speed-preset",
-                if video.mode == VideoMode::Vga {
-                    "ultrafast"
-                } else {
-                    "superfast"
-                },
-            );
-
-            if video.mode == VideoMode::Hd60 {
-                // Frame threading improves compression efficiency versus slicing
-                // one frame among many threads. No B-frames or lookahead; four
-                // threads can add about three frames (50 ms) of encoder delay.
-                let threads = std::thread::available_parallelism()
-                    .map(|n| n.get().min(4) as u32)
-                    .unwrap_or(1);
-                encoder.set_property("threads", threads);
-                encoder.set_property("sliced-threads", false);
-                encoder.set_property("rc-lookahead", 0i32);
-                encoder.set_property("sync-lookahead", 0i32);
-            }
-            encoder.set_property("bframes", 0u32);
-            encoder.set_property("key-int-max", video.mode.fps());
-            encoder.set_property("byte-stream", true);
-            encoder.set_property("aud", true);
-            // WFD bit 1 is Restricted High (RHP), which forbids CABAC.
-            encoder.set_property("cabac", false);
-            encoder.set_property("dct8x8", video.profile == H264Profile::High);
-        }
-        "openh264enc" => {
-            encoder.set_property_from_str("rate-control", "bitrate");
-            encoder.set_property_from_str("usage-type", "screen");
-            encoder.set_property("gop-size", video.mode.fps());
-        }
-        _ => {
-            if video.profile == H264Profile::High {
-                let cabac = encoder
-                    .find_property("cabac")
-                    .filter(|property| property.value_type() == bool::static_type())
-                    .ok_or(MediaError::NoEncoder)?;
-                encoder.set_property(cabac.name(), false);
-            }
-            set_uint(&encoder, "key-int-max", video.mode.fps());
-            set_uint(&encoder, "gop-size", video.mode.fps());
-            set_uint(&encoder, "bframes", 0);
-        }
-    }
-    set_bitrate(&encoder, video.mode.bitrate_range().0)?;
-    Ok(encoder)
-}
-
 fn encoded_chain(
     choice: &EncoderChoice,
     video: VideoFormat,
 ) -> Result<[gst::Element; 4], MediaError> {
+    if choice.capture_memory == CaptureMemory::DmaBuf && !choice.processing.is_gpu() {
+        return Err(MediaError::NoEncoder);
+    }
     let raw = pipeline::element("capsfilter")?;
-    raw.set_property("caps", crate::quality::raw_caps(video));
-    let encoder = configured_encoder(choice, video)?;
+    let caps = choice.processing.encoder_caps(video, choice.input_format);
+    raw.set_property("caps", &caps);
+    let encoder = crate::encoder::configured_encoder(&choice.name, video)?;
+    let pad = encoder.static_pad("sink").ok_or(MediaError::NoEncoder)?;
+    if !pad.query_caps(None).can_intersect(&caps) {
+        return Err(MediaError::Element(format!(
+            "{}: tested input format {} is no longer supported",
+            choice.name,
+            choice.input_format.name()
+        )));
+    }
     let parser = pipeline::element("h264parse")?;
     parser.set_property("config-interval", -1i32);
     let h264 = pipeline::element("capsfilter")?;
@@ -157,57 +140,67 @@ fn encoded_chain(
     Ok([raw, encoder, parser, h264])
 }
 
-/// Reduce the RGB desktop before color conversion in the high-cadence mode.
-/// Other modes keep their existing conversion/scaling and live renegotiation.
-fn video_processing(mode: VideoMode) -> Result<Vec<gst::Element>, MediaError> {
-    let convert = pipeline::element("videoconvert")?;
-    convert.set_property("n-threads", 2u32);
-    let scale = pipeline::element("videoscale")?;
-    scale.set_property("n-threads", 2u32);
-    // Preserve monitor aspect ratio using borders within the negotiated video mode.
-    scale.set_property("add-borders", true);
-    if mode == VideoMode::Hd60 {
-        let size = pipeline::element("capsfilter")?;
-        let (width, height) = mode.size();
-        size.set_property(
-            "caps",
-            gst::Caps::builder("video/x-raw")
-                .field("width", width as i32)
-                .field("height", height as i32)
-                .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
-                .build(),
-        );
-        Ok(vec![scale, size, convert])
-    } else {
-        Ok(vec![convert, scale])
-    }
-}
-
 fn probe(
     choice: &EncoderChoice,
     size: (u32, u32),
     cancel: &CancellationToken,
 ) -> Result<(), MediaError> {
+    probe_source(choice, CaptureSource::Test, Some(size), cancel)
+}
+
+/// Validate import/processing/encoding on the already authorized capture.
+/// This sends no network packets and never maps frame data into Rust.
+pub fn probe_capture(
+    choice: &EncoderChoice,
+    source: CaptureSource,
+    cancel: &CancellationToken,
+) -> Result<(), MediaError> {
+    probe_source(choice, source, None, cancel)
+}
+
+fn probe_source(
+    choice: &EncoderChoice,
+    source: CaptureSource,
+    synthetic_size: Option<(u32, u32)>,
+    cancel: &CancellationToken,
+) -> Result<(), MediaError> {
+    if cancel.is_cancelled() {
+        return Err(MediaError::Cancelled);
+    }
     let video = choice.offer.preferred;
-    let src = pipeline::element("videotestsrc")?;
-    src.set_property("is-live", true);
+    let src = pipeline::capture_element(&source)?;
+    let processing = choice.processing.build(video.mode)?;
     // Exercise conversion/scaling from the authorized desktop size, rather than
     // only encoding an already reduced I420 test frame.
     let desktop = pipeline::element("capsfilter")?;
-    desktop.set_property(
-        "caps",
-        gst::Caps::builder("video/x-raw")
-            .field("format", "BGRx")
-            .field("width", size.0 as i32)
-            .field("height", size.1 as i32)
-            .build(),
-    );
-    let processing = video_processing(video.mode)?;
+    let desktop_caps = if let Some(size) = synthetic_size {
+        let input = processing
+            .first()
+            .and_then(|element| element.static_pad("sink"))
+            .ok_or(MediaError::NoEncoder)?
+            .query_caps(None);
+        ["BGRx", "BGRA", "RGBA"]
+            .into_iter()
+            .map(|format| {
+                gst::Caps::builder("video/x-raw")
+                    .field("format", format)
+                    .field("width", size.0 as i32)
+                    .field("height", size.1 as i32)
+                    .build()
+            })
+            .find(|caps| input.can_intersect(caps))
+            .ok_or(MediaError::NoEncoder)?
+    } else {
+        gst::Caps::builder("video/x-raw").any_features().build()
+    };
+    desktop.set_property("caps", desktop_caps);
+    let [rate, rate_caps, queue] =
+        crate::processing::capture_pacing(video.mode, choice.capture_memory)?;
     let chain = encoded_chain(choice, video)?;
     let sink = pipeline::element("fakesink")?;
     sink.set_property("sync", false);
     let pipeline = gst::Pipeline::new();
-    let mut elements = vec![&src, &desktop];
+    let mut elements = vec![&src, &desktop, &rate, &rate_caps, &queue];
     elements.extend(processing.iter());
     elements.extend(chain.iter());
     elements.push(&sink);
@@ -219,21 +212,33 @@ fn probe(
         streaming: false,
         encoder: Some(chain[1].clone()),
         control: None,
-        _source: CaptureSource::Test,
+        _source: source,
     };
     let bus = guard.pipeline.bus().ok_or(MediaError::NoBus)?;
     guard.start()?;
     // Exercise live fallback and recovery on this same encoder before offering it.
-    let mut stages = vec![video];
-    if let Some(fallback) = choice.offer.fallback {
-        stages.extend([fallback, video]);
+    let mut stages = vec![(video, video.mode.bitrate_range().0)];
+    if synthetic_size.is_some() {
+        if video.mode == VideoMode::FullHd {
+            stages.push((video, video.mode.bitrate_range().1));
+        }
+        if let Some(fallback) = choice.offer.fallback {
+            stages.extend([
+                (fallback, fallback.mode.bitrate_range().0),
+                (video, video.mode.bitrate_range().0),
+            ]);
+        }
     }
-    let deadline = Instant::now() + Duration::from_secs(4);
+    let deadline =
+        Instant::now() + Duration::from_secs(if choice.processing.is_gpu() { 8 } else { 4 });
     let stages = stages.iter().enumerate();
-    for (index, stage) in stages {
+    for (index, (stage, bitrate)) in stages {
         if index > 0 {
-            set_bitrate(&chain[1], stage.mode.bitrate_range().0)?;
-            chain[0].set_property("caps", crate::quality::raw_caps(*stage));
+            set_bitrate(&chain[1], *bitrate)?;
+            chain[0].set_property(
+                "caps",
+                choice.processing.encoder_caps(*stage, choice.input_format),
+            );
             guard.request_keyframe();
         }
         let mut first = None;
@@ -273,19 +278,43 @@ fn probe(
                     frames
                 });
                 let measured = frames.saturating_sub(first);
-                let needed = if stage.mode == VideoMode::Hd60 {
+                let needed = if synthetic_size.is_none() {
+                    // Static portal desktops can be sparse. One real encoded
+                    // frame proves import; cadence is measured by synthetic preflight.
+                    0
+                } else if stage.mode == VideoMode::Hd60 {
                     119
                 } else {
                     5
                 };
-                if measured >= needed {
-                    if stage.mode == VideoMode::Hd60
+                if frames > 0 && measured >= needed {
+                    if synthetic_size.is_some()
+                        && stage.mode == VideoMode::Hd60
                         && measured as f64 / measured_from.elapsed().as_secs_f64() < 57.0
                     {
                         return Err(MediaError::Pipeline(
                             "Encoder did not sustain the 60 fps target in the synthetic capture test"
                                 .into(),
                         ));
+                    }
+                    let encoder_caps = chain[1]
+                        .static_pad("sink")
+                        .and_then(|pad| pad.current_caps())
+                        .ok_or(MediaError::NoEncoder)?;
+                    if !encoder_caps
+                        .is_subset(&choice.processing.encoder_caps(*stage, choice.input_format))
+                    {
+                        return Err(MediaError::NoEncoder);
+                    }
+                    let capture_caps = src
+                        .static_pad("src")
+                        .and_then(|pad| pad.current_caps())
+                        .ok_or(MediaError::NoEncoder)?;
+                    let dma_buf = capture_caps
+                        .features(0)
+                        .is_some_and(|features| features.contains("memory:DMABuf"));
+                    if dma_buf != (choice.capture_memory == CaptureMemory::DmaBuf) {
+                        return Err(MediaError::NoEncoder);
                     }
                     break;
                 }
@@ -356,12 +385,13 @@ pub fn capture_format(
 pub fn probe_encoders(
     preferred: VideoMode,
     size: (u32, u32),
+    excluded: &[(String, VideoProcessing)],
     cancel: &CancellationToken,
 ) -> Result<Vec<EncoderChoice>, MediaError> {
     gst::init()?;
     let names = EncoderSelector::available();
     let candidates: Vec<_> = names.iter().map(String::as_str).collect();
-    probe_modes(&candidates, preferred, size, cancel)
+    probe_modes_excluding(&candidates, preferred, size, excluded, cancel)
 }
 
 /// Hardware-free receivers/tests explicitly select software candidates.
@@ -378,6 +408,16 @@ pub fn probe_modes(
     size: (u32, u32),
     cancel: &CancellationToken,
 ) -> Result<Vec<EncoderChoice>, MediaError> {
+    probe_modes_excluding(candidates, preferred, size, &[], cancel)
+}
+
+fn probe_modes_excluding(
+    candidates: &[&str],
+    preferred: VideoMode,
+    size: (u32, u32),
+    excluded: &[(String, VideoProcessing)],
+    cancel: &CancellationToken,
+) -> Result<Vec<EncoderChoice>, MediaError> {
     gst::init()?;
     let mut choices = Vec::new();
     let modes = VideoMode::USER_MODES
@@ -392,35 +432,62 @@ pub fn probe_modes(
     for mode in modes {
         for &name in candidates {
             for profile in [H264Profile::High, H264Profile::Baseline] {
-                if choices.iter().any(|c: &EncoderChoice| {
-                    c.offer.preferred.mode == mode && c.offer.preferred.profile == profile
+                for processing in VideoProcessing::candidates(name, |name| {
+                    gst::ElementFactory::find(name).is_some()
+                })
+                .into_iter()
+                .filter(|path| {
+                    *path == VideoProcessing::Cpu
+                        || !excluded
+                            .iter()
+                            .any(|(encoder, rejected)| encoder == name && rejected == path)
                 }) {
-                    continue;
-                }
-                let video = VideoFormat {
-                    mode,
-                    profile,
-                    level: mode.minimum_level(),
-                    r2: mode.requires_r2(),
-                };
-                let fallback = (mode > VideoMode::Hd && mode.fps() == VideoMode::Hd.fps())
-                    .then_some(VideoFormat {
-                        mode: VideoMode::Hd,
-                        ..video
-                    });
-                let choice = EncoderChoice {
-                    name: name.into(),
-                    offer: VideoOffer {
-                        preferred: video,
-                        fallback,
-                    },
-                };
-                let result = probe(&choice, size, cancel);
-                match result {
-                    Ok(()) => choices.push(choice),
-                    Err(MediaError::Cancelled) => return Err(MediaError::Cancelled),
-                    Err(error) => {
-                        tracing::debug!(target:"wireless_display::media",encoder=name,?mode,%error,"Encoder rejected the test format")
+                    if choices.iter().any(|c: &EncoderChoice| {
+                        c.offer.preferred.mode == mode && c.offer.preferred.profile == profile
+                    }) {
+                        continue;
+                    }
+                    let video = VideoFormat {
+                        mode,
+                        profile,
+                        level: mode.minimum_level(),
+                        r2: mode.requires_r2(),
+                    };
+                    let fallback = (mode > VideoMode::Hd && mode.fps() == VideoMode::Hd.fps())
+                        .then_some(VideoFormat {
+                            mode: VideoMode::Hd,
+                            ..video
+                        });
+                    let result = (|| {
+                        let encoder = crate::encoder::configured_encoder(name, video)?;
+                        let supported = encoder
+                            .static_pad("sink")
+                            .ok_or(MediaError::NoEncoder)?
+                            .query_caps(None);
+                        let input_format =
+                            EncoderInputFormat::select(name, &supported, video, processing)?;
+                        // Release any device resources before the live probe builds
+                        // its own encoder instance.
+                        drop(encoder);
+                        let choice = EncoderChoice {
+                            name: name.into(),
+                            input_format,
+                            processing,
+                            capture_memory: CaptureMemory::System,
+                            offer: VideoOffer {
+                                preferred: video,
+                                fallback,
+                            },
+                        };
+                        probe(&choice, size, cancel)?;
+                        Ok(choice)
+                    })();
+                    match result {
+                        Ok(choice) => choices.push(choice),
+                        Err(MediaError::Cancelled) => return Err(MediaError::Cancelled),
+                        Err(error) => {
+                            tracing::debug!(target:"wireless_display::media",encoder=name,?mode,?processing,%error,"Encoder rejected the test format")
+                        }
                     }
                 }
             }
@@ -430,53 +497,6 @@ pub fn probe_modes(
         return Err(MediaError::NoEncoder);
     }
     Ok(choices)
-}
-
-/// Encoder properties have different units. Only known, live-mutable controls qualify.
-pub(crate) fn set_bitrate(encoder: &gst::Element, kbps: u32) -> Result<(), MediaError> {
-    let name = encoder
-        .factory()
-        .map(|factory| factory.name().to_string())
-        .unwrap_or_default();
-    let value = match name.as_str() {
-        "openh264enc" => kbps.checked_mul(1000).ok_or(MediaError::NoEncoder)?,
-        "x264enc" | "vah264enc" | "vaapih264enc" | "nvh264enc" | "nvautogpuh264enc"
-        | "qsvh264enc" => kbps,
-        _ => {
-            return Err(MediaError::Element(format!(
-                "{name}: bitrate control unavailable"
-            )));
-        }
-    };
-    let property = encoder
-        .find_property("bitrate")
-        .ok_or(MediaError::NoEncoder)?;
-    if !property.flags().contains(gst::PARAM_FLAG_MUTABLE_PLAYING) {
-        return Err(MediaError::Pipeline(format!(
-            "{name}: the bitrate property does not advertise mutability in PLAYING"
-        )));
-    }
-    if let Some(spec) = property.downcast_ref::<gst::glib::ParamSpecUInt>() {
-        if value < spec.minimum() || value > spec.maximum() {
-            return Err(MediaError::NoEncoder);
-        }
-        if name == "openh264enc" && value > encoder.property::<u32>("max-bitrate") {
-            encoder.set_property("max-bitrate", value);
-        }
-        encoder.set_property("bitrate", value);
-        if name == "openh264enc" {
-            encoder.set_property("max-bitrate", value);
-        }
-    } else if let Some(spec) = property.downcast_ref::<gst::glib::ParamSpecInt>() {
-        let value = i32::try_from(value).map_err(|_| MediaError::NoEncoder)?;
-        if value < spec.minimum() || value > spec.maximum() {
-            return Err(MediaError::NoEncoder);
-        }
-        encoder.set_property("bitrate", value);
-    } else {
-        return Err(MediaError::NoEncoder);
-    }
-    Ok(())
 }
 
 impl GstMediaPipeline {
@@ -508,24 +528,12 @@ impl GstMediaPipeline {
             return Err(MediaError::NoEncoder);
         }
         let src = pipeline::capture_element(&source)?;
-        let queue = pipeline::element("queue")?;
-        queue.set_property("max-size-buffers", 2u32);
-        queue.set_property("max-size-bytes", 0u32);
-        queue.set_property("max-size-time", 0u64);
-        queue.set_property_from_str("leaky", "downstream");
-        let processing = video_processing(plan.video.mode)?;
-        let rate = pipeline::element("videorate")?;
-        if plan.video.mode == VideoMode::Hd60 {
-            rate.set_property("drop-only", true);
-        }
-        let rate_caps = pipeline::element("capsfilter")?;
-        rate_caps.set_property(
-            "caps",
-            gst::Caps::builder("video/x-raw")
-                .field("framerate", crate::quality::frame_rates(plan.video.mode))
-                .build(),
-        );
+        let processing = choice.processing.build(plan.video.mode)?;
+        let [rate, rate_caps, queue] =
+            crate::processing::capture_pacing(plan.video.mode, choice.capture_memory)?;
         let chain = encoded_chain(choice, plan.video)?;
+        watch_video_caps(&src, "src", "capture", &choice.name)?;
+        watch_video_caps(&chain[0], "src", "encoder-input", &choice.name)?;
         let mux = pipeline::element("mpegtsmux")?;
         mux.set_property("alignment", 7i32);
         mux.set_property(
@@ -569,14 +577,8 @@ impl GstMediaPipeline {
         mux.link(&pay)?;
         if let Some(port) = plan.client_ports.rtcp {
             let bin = pipeline::element("rtpbin")?;
-            // A connected UDP socket accepts RTCP only from this negotiated peer/port.
             let address = gio::InetAddress::from_string(&plan.peer.to_string())
                 .ok_or(MediaError::NoEncoder)?;
-            gio::prelude::SocketExt::connect(
-                &sockets.rtcp,
-                &gio::InetSocketAddress::new(&address, port),
-                gio::Cancellable::NONE,
-            )?;
             let rtcp_sink = pipeline::element("udpsink")?;
             rtcp_sink.set_property("host", plan.peer.to_string());
             rtcp_sink.set_property("port", i32::from(port));
@@ -587,8 +589,9 @@ impl GstMediaPipeline {
             let rtcp_src = pipeline::element("udpsrc")?;
             rtcp_src.set_property("socket", &sockets.rtcp);
             rtcp_src.set_property("close-socket", false);
+            rtcp_src.set_property("retrieve-sender-address", true);
             rtcp_src.set_property("caps", gst::Caps::builder("application/x-rtcp").build());
-            telemetry.watch_rtcp(&rtcp_src, ssrc);
+            telemetry.watch_rtcp(&rtcp_src, ssrc, address);
             pipeline.add_many([&bin, &rtcp_sink, &rtcp_src])?;
             pay.link_pads(Some("src"), &bin, Some("send_rtp_sink_0"))?;
             bin.link_pads(Some("send_rtp_src_0"), &sink, Some("sink"))?;
@@ -597,6 +600,9 @@ impl GstMediaPipeline {
         } else {
             pay.link(&sink)?;
         }
+        tracing::info!(target: "wireless_display::media", encoder = %choice.name,
+            processing = ?choice.processing, capture_memory = ?choice.capture_memory,
+            "Video processing configured");
         Ok(Self {
             pipeline,
             sink,
@@ -604,6 +610,8 @@ impl GstMediaPipeline {
             encoder: Some(chain[1].clone()),
             control: Some(crate::quality::StreamingControl::new(
                 chain[0].clone(),
+                choice.input_format,
+                choice.processing,
                 queue.static_pad("src").ok_or(MediaError::NoEncoder)?,
                 telemetry,
             )),
@@ -616,6 +624,75 @@ impl GstMediaPipeline {
 mod tests {
     use super::*;
     use wireless_display_core::MediaEvent;
+
+    #[test]
+    fn capture_probe_and_exclusions_preserve_a_working_software_path() {
+        let cancel = CancellationToken::new();
+        let choices = probe_modes_excluding(
+            &["x264enc"],
+            VideoMode::Hd,
+            VideoMode::Hd.size(),
+            &[
+                ("vah264enc".into(), VideoProcessing::Va),
+                ("vaapih264enc".into(), VideoProcessing::Vaapi),
+                ("nvh264enc".into(), VideoProcessing::Cuda),
+                ("x264enc".into(), VideoProcessing::Cpu),
+            ],
+            &cancel,
+        )
+        .unwrap();
+        let mut choice = choices[0].clone();
+        assert_eq!(choice.processing, VideoProcessing::Cpu);
+        probe_capture(&choice, CaptureSource::Test, &cancel).unwrap();
+        choice.capture_memory = CaptureMemory::DmaBuf;
+        assert!(probe_capture(&choice, CaptureSource::Test, &cancel).is_err());
+        choice.capture_memory = CaptureMemory::System;
+        cancel.cancel();
+        assert!(matches!(
+            probe_capture(&choice, CaptureSource::Test, &cancel),
+            Err(MediaError::Cancelled)
+        ));
+    }
+
+    #[test]
+    #[ignore = "requires a GPU, compatible drivers, and encoder/postprocessor plugins; synthetic video only"]
+    fn gpu_processing_encodes_and_preserves_live_bitrate_and_resolution_changes() {
+        let cancel = CancellationToken::new();
+        let choices =
+            probe_encoders(VideoMode::FullHd, VideoMode::FullHd.size(), &[], &cancel).unwrap();
+        let choice = choices
+            .iter()
+            .find(|choice| {
+                choice.processing.is_gpu() && choice.offer.preferred.mode == VideoMode::FullHd
+            })
+            .expect(
+                "no GPU path passed preflight; verify driver, plugins and live bitrate support",
+            );
+        // Synthetic preflight exercises the same processing graph as streaming,
+        // including 8/16 Mbit/s and 1080p/720p/1080p before returning a choice.
+        probe(choice, VideoMode::FullHd.size(), &cancel).unwrap();
+    }
+
+    #[test]
+    fn rejected_encoder_keeps_the_software_fallback_available() {
+        let choices = probe_encoder_candidates(
+            &["identity", "x264enc", "openh264enc"],
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(!choices.is_empty());
+        assert!(
+            choices
+                .iter()
+                .all(|choice| matches!(choice.name.as_str(), "x264enc" | "openh264enc"))
+        );
+        assert!(
+            choices
+                .iter()
+                .all(|choice| choice.input_format == EncoderInputFormat::I420)
+        );
+    }
+
     fn receiver() -> (GstMediaPipeline, u16) {
         gst::init().unwrap();
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -716,6 +793,9 @@ mod tests {
         };
         let choice = EncoderChoice {
             name: "x264enc".into(),
+            input_format: EncoderInputFormat::I420,
+            processing: VideoProcessing::Cpu,
+            capture_memory: CaptureMemory::System,
             offer: VideoOffer {
                 preferred: video,
                 fallback: None,
@@ -877,7 +957,11 @@ mod tests {
     async fn live_full_hd_fallback_recovery_has_exact_pes_timing_and_cancellable_frame_gate() {
         use std::sync::{Arc, Mutex};
         use wireless_display_core::protocol::wfd::quality::QualityTarget;
-        for name in ["x264enc", "openh264enc"] {
+        for (name, input_format) in [
+            ("x264enc", EncoderInputFormat::I420),
+            ("x264enc", EncoderInputFormat::Nv12),
+            ("openh264enc", EncoderInputFormat::I420),
+        ] {
             let (receiver, port) = receiver();
             let cancel = CancellationToken::new();
             let choices = probe_modes(
@@ -887,10 +971,16 @@ mod tests {
                 &cancel,
             )
             .unwrap();
-            let choice = choices
+            let mut choice = choices
                 .iter()
                 .find(|c| c.offer.preferred.mode == VideoMode::FullHd)
+                .cloned()
                 .expect("software encoder must support Full HD and fallback at one level");
+            // Exercise NV12 through a real encoder/decoder without needing a GPU.
+            if choice.input_format != input_format {
+                choice.input_format = input_format;
+                probe(&choice, VideoMode::FullHd.size(), &cancel).unwrap();
+            }
             let plan = NegotiatedStream {
                 video: choice.offer.preferred,
                 fallback: choice.offer.fallback,
@@ -904,7 +994,7 @@ mod tests {
                 GstMediaPipeline::try_new_streaming(
                     CaptureSource::Test,
                     &plan,
-                    choice,
+                    &choice,
                     RtpSockets::bind(Ipv4Addr::LOCALHOST).unwrap(),
                 )
                 .unwrap(),
@@ -1012,6 +1102,18 @@ mod tests {
                 let first = parsed.lock().unwrap().len();
                 pipeline.commit_format(prepared).unwrap();
                 wait_size(&receiver, video.mode.size()).await;
+                let caps = pipeline
+                    .encoder
+                    .as_ref()
+                    .unwrap()
+                    .static_pad("sink")
+                    .unwrap()
+                    .current_caps()
+                    .unwrap();
+                assert_eq!(
+                    caps.structure(0).unwrap().get::<&str>("format").unwrap(),
+                    input_format.name()
+                );
                 let first_new = parsed.lock().unwrap()[first..]
                     .iter()
                     .find(|(width, _, _)| *width == video.mode.size().0 as i32)
@@ -1082,7 +1184,27 @@ mod tests {
         let mut rr = vec![0x81, 201, 0, 7, 0, 0, 0, 99];
         rr.extend(ssrc);
         rr.extend([64, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-        rtcp.send_to(&rr, source).await.unwrap();
+        // A valid report from a different host must not reach the controller.
+        let other_host = tokio::net::UdpSocket::bind("127.0.0.2:0").await.unwrap();
+        other_host.send_to(&rr, source).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let MediaEvent::Quality(sample) = rx.recv().await.unwrap() {
+                    assert_eq!(sample.loss, None);
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        // SETUP advertises where the TV receives RTCP; its feedback may use a
+        // separate sending socket, as observed with the physical receiver.
+        let feedback = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        assert_ne!(
+            feedback.local_addr().unwrap().port(),
+            rtcp.local_addr().unwrap().port()
+        );
+        feedback.send_to(&rr, source).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5),async {
             loop { if matches!(rx.recv().await.unwrap(), wireless_display_core::MediaEvent::Quality(sample) if sample.loss == Some(64)) { break; } }
         }).await.unwrap();

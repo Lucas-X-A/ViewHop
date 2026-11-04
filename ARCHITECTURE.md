@@ -101,6 +101,9 @@ deadline and cancellation. After the session starts, loss or change of IPv4 stop
 sharing immediately, without reusing the initial waiting period.
 RTP/RTCP sockets are reserved and passed to GStreamer as GSocket through OwnedFd
 ownership, without project-owned unsafe code or a close/reopen port race.
+RTCP source metadata is checked against the RTSP peer's IP before telemetry and
+rtpbin. The negotiated receive port remains the outgoing destination; the TV may
+send feedback from a different port on that IP.
 
 The selected pipeline uses H.264, MPEG-TS, and RTP payload 33, with optional RTCP.
 Local frames and sent packets have separate events/counters. The backend observes
@@ -124,6 +127,18 @@ RTSP writer and validates every change against the negotiated offer. Media
 prepares a frame; RTSP M4 acknowledges the change; media applies caps/IDR and
 releases the frame. Rejections preserve the previous stream. Blocking uses RAII
 and is also released by `stop()`, even if cancellation races with renegotiation.
+
+Media's encoder module owns per-backend settings, bitrate units/mutability, and
+selection of a supported I420/NV12 input. EncoderChoice retains the tested input;
+StreamingControl preserves it when changing resolution. Core's WFD offer and
+adaptive bitrate policy remain independent of raw pixel formats and GStreamer.
+
+Media's processing module owns optional VA/legacy VA-API/CUDA conversion/scaling,
+GPU caps, and capture pacing. EncoderChoice retains the tested processing and
+capture-memory contracts; resolution changes preserve GPU memory features.
+App renews restricted portal remotes while validating GPU import on authorized
+capture before P2P. Failed encoder/path pairs are excluded only for this
+preparation, with CPU/software alternatives retained. No CPU vendor is required.
 
 `StreamNegotiated` updates the GUI's resolution and bitrate target after initial
 negotiation and acknowledged adjustments. Missing RTCP does not mean zero loss.

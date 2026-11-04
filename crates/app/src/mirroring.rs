@@ -33,6 +33,114 @@ async fn emit(tx: &async_channel::Sender<Event>, event: Event, cancel: &Cancella
     tokio::select! { _ = cancel.cancelled() => {}, _ = tx.send(event) => {} }
 }
 
+/// Own portal remote renewal across geometry, synthetic, and authorized GPU probes.
+async fn prepare_encoders(
+    lease: &mut SelectedCapture,
+    preferred: VideoMode,
+    cancel: &CancellationToken,
+) -> Result<Vec<EncoderChoice>, String> {
+    let source = lease.source();
+    let token = cancel.clone();
+    let capture = tokio::task::spawn_blocking(move || media::capture_format(source, &token))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    let selected = if preferred == VideoMode::Hd60 && !capture.supports_60fps {
+        VideoMode::Hd
+    } else {
+        preferred
+    };
+    tracing::info!(target: "wireless_display::miracast", requested_mode = ?preferred,
+        capture_width = capture.pixels.0, capture_height = capture.pixels.1,
+        supports_60fps = capture.supports_60fps, probe_mode = ?selected,
+        "Captured source geometry and video preference");
+    let mut excluded = Vec::new();
+    loop {
+        if cancel.is_cancelled() {
+            return Err(MediaError::Cancelled.to_string());
+        }
+        let rejected = excluded.clone();
+        let token = cancel.clone();
+        let mut choices = tokio::task::spawn_blocking(move || {
+            media::probe_encoders(selected, capture.pixels, &rejected, &token)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+        let mut verified = Vec::new();
+        let mut failed = None;
+        for choice in &mut choices {
+            if !choice.processing.is_gpu() {
+                continue;
+            }
+            if let Some((_, _, memory)) = verified
+                .iter()
+                .find(|(name, path, _)| name == &choice.name && path == &choice.processing)
+            {
+                choice.capture_memory = *memory;
+                continue;
+            }
+            let memories = if matches!(lease.source(), CaptureSource::PipeWire { .. }) {
+                &[media::CaptureMemory::DmaBuf, media::CaptureMemory::System][..]
+            } else {
+                &[media::CaptureMemory::System][..]
+            };
+            let mut accepted = false;
+            for &memory in memories {
+                if cancel.is_cancelled() {
+                    return Err(MediaError::Cancelled.to_string());
+                }
+                // Every PipeWire probe consumes a remote. Reopen within the same
+                // authorized portal session; never reuse a consumed connection FD.
+                lease
+                    .reopen_remote(cancel)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                choice.capture_memory = memory;
+                let candidate = choice.clone();
+                let source = lease.source();
+                let token = cancel.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    media::probe_capture(&candidate, source, &token)
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+                match result {
+                    Ok(()) => {
+                        tracing::info!(target: "wireless_display::miracast", encoder = %choice.name,
+                            processing = ?choice.processing, capture_memory = ?memory,
+                            "GPU processing validated on authorized capture");
+                        verified.push((choice.name.clone(), choice.processing, memory));
+                        accepted = true;
+                        break;
+                    }
+                    Err(MediaError::Cancelled) => return Err(MediaError::Cancelled.to_string()),
+                    Err(error) => {
+                        tracing::debug!(target: "wireless_display::miracast", encoder = %choice.name,
+                        processing = ?choice.processing, capture_memory = ?memory, %error,
+                        "Capture import rejected; trying a compatible path")
+                    }
+                }
+            }
+            if !accepted {
+                failed = Some((choice.name.clone(), choice.processing));
+                break;
+            }
+        }
+        if let Some(path) = failed {
+            // Each configured encoder has at most one GPU path. Reject only that
+            // encoder/path pair; keep other GPUs and every CPU path available.
+            excluded.push(path);
+            continue;
+        }
+        lease
+            .reopen_remote(cancel)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(choices);
+    }
+}
+
 pub(crate) async fn run(
     peer: WirelessDisplayDevice,
     environment: DesktopEnvironment,
@@ -40,26 +148,12 @@ pub(crate) async fn run(
     events: async_channel::Sender<Event>,
     cancel: CancellationToken,
 ) -> Result<(), String> {
-    tracing::info!(target: "wireless_display::miracast", "Testing H.264 encoders before activating Wi-Fi Direct");
+    tracing::info!(target: "wireless_display::miracast", requested_mode = ?preferred, "Testing H.264 encoders before activating Wi-Fi Direct");
     let mut lease = capture::select_capture(&environment, CaptureRequest, cancel.clone())
         .await
         .map_err(|e| e.to_string())?;
     emit(&events, Event::SourceSelected(lease.info()), &cancel).await;
-    let probe_token = cancel.clone();
-    let source = lease.source();
-    let prepared = tokio::task::spawn_blocking(move || {
-        let capture = media::capture_format(source, &probe_token)?;
-        let selected = if preferred == VideoMode::Hd60 && !capture.supports_60fps {
-            VideoMode::Hd
-        } else {
-            preferred
-        };
-        media::probe_encoders(selected, capture.pixels, &probe_token)
-    })
-    .await
-    .map_err(|e| e.to_string())
-    .and_then(|result| result.map_err(|e| e.to_string()));
-    let choices = match prepared {
+    let choices = match prepare_encoders(&mut lease, preferred, &cancel).await {
         Ok(choices) => choices,
         Err(error) => {
             let _ = lease.close().await;
@@ -70,15 +164,10 @@ pub(crate) async fn run(
             };
         }
     };
-    if let Err(error) = lease.reopen_remote(&cancel).await {
-        let _ = lease.close().await;
-        return if cancel.is_cancelled() {
-            Ok(())
-        } else {
-            Err(error.to_string())
-        };
-    }
     tracing::debug!(target: "wireless_display::miracast", ?choices, "Validated H.264 encoders");
+    if let Some(choice) = choices.first() {
+        tracing::info!(target: "wireless_display::miracast", requested_mode = ?preferred, offered_mode = ?choice.offer.preferred.mode, encoder = %choice.name, processing = ?choice.processing, capture_memory = ?choice.capture_memory, "Encoder preflight completed");
+    }
     if choices
         .first()
         .is_some_and(|choice| choice.offer.preferred.mode < preferred)
@@ -292,7 +381,7 @@ async fn session(
                         match configured {
                             Ok((new,ports,info)) => {
                                 adaptive = Some(AdaptiveQuality::new(stream.video, stream.fallback));
-                                tracing::info!(target:"wireless_display::miracast",encoder=%info.encoder,mode=?info.video.mode,fps=info.video.mode.fps(),bitrate_kbps=info.bitrate_kbps,"Video negotiated");
+                                tracing::info!(target:"wireless_display::miracast",encoder=%info.encoder,mode=?info.video.mode,fps=info.video.mode.fps(),bitrate_kbps=info.bitrate_kbps,rtcp_negotiated=stream.client_ports.rtcp.is_some(),"Video negotiated");
                                 stream_info = Some(info.clone()); pipeline = Some(new);
                                 emit(&events,Event::Negotiated(info),cancel).await;
                                 if stream.video.mode.size().1 > 720 && stream.fallback.is_none() {

@@ -28,6 +28,9 @@ still provisional.
   to 720p and recovery when conditions allow. Bitrate increases depend on fresh
   RTCP feedback and sufficient encoding headroom; they are not based on internet speed.
 - Prefer usable hardware encoders, with x264/OpenH264 software alternatives.
+- Use GPU conversion/scaling and PipeWire DMA-BUF import when the complete path
+  passes preflight. VA-API/CUDA plugins are optional; compatible CPU paths remain
+  available. Actual power and memory savings depend on hardware and drivers.
 - Inspect system capabilities, test local capture, or run a simulated connection
   without a TV through dummy mode.
 

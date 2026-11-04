@@ -68,12 +68,56 @@ at the same bitrate. The advertised High profile is Restricted High (RHP), so
 CABAC is disabled as required by WFD. Encoders without known bitrate control
 that is mutable in PLAYING are not advertised by this path.
 
+Encoder input is selected from its advertised sink caps: hardware prefers NV12,
+while x264/OpenH264 retain I420 when supported. Both are 8-bit 4:2:0. Preflight
+tests the selected input through conversion, encoding, and live resolution
+fallback/recovery. The same input format is retained in EncoderChoice and during
+acknowledged resolution changes. An incompatible hardware candidate does not
+prevent testing software alternatives.
+
+Hardware settings use each backend's property names: VA uses b-frames and
+key-int-max, legacy VA-API uses max-bframes and keyframe-period, NVENC uses
+zerolatency/bframes/rc-lookahead, and QSV uses low-latency/b-frames. Rate control
+is explicitly CBR for these paths and x264 (whose CBR mode is actually ABR).
+Missing, mistyped, or out-of-range required controls reject the candidate;
+bitrate units and PLAYING mutability remain validated. QSV's CABAC enum is
+handled separately from the boolean VA/NV controls, preserving Restricted High.
+
+Conversion/scaling prefers a compatible GPU path: vapostproc with VAMemory for
+VA/QSV, vaapipostproc with VASurface for legacy VA-API, or cudaupload plus
+cudaconvertscale with CUDAMemory for NVENC. Optional plugins, driver capabilities,
+and encoder sink caps determine eligibility; CPU models are not hard-coded.
+The complete synthetic graph must encode in the requested mode, change the live
+Full HD target to 16 Mbit/s, and pass fallback/recovery before it is offered.
+GPU surfaces are required at the encoder input, avoiding a silent download to
+system memory between processing and encoding. Aspect ratio is preserved.
+
+Before P2P, a GPU candidate also encodes a frame from the authorized capture into
+fakesink. Portal capture first tries an explicit DMABuf contract; if import fails,
+GPU processing is retried with system-memory capture/upload. X11 uses system-memory
+capture. Each PipeWire attempt gets a fresh restricted remote within the same
+authorized session. Failed encoder/GPU-path pairs are excluded from this
+preparation and candidates are tested again, retaining other GPU paths, CPU
+processing with hardware encoding, and x264/OpenH264. No driver, scheduler, or
+firewall settings are changed. The two-frame leaky queue remains in use.
+
+INFO logs named `Negotiated video input` report capture and encoder-input format,
+geometry, frame rate, and negotiated memory features. `GPU processing validated
+on authorized capture` identifies the accepted processing/capture-memory pair.
+DMABuf plus GPU input caps prove successful import/negotiation, not the absence
+of internal driver copies or dedicated VRAM residency. Actual energy, RAM, and
+latency improvements require measurements on the target hardware. Video frames
+are never mapped or copied into Rust for these probes or logs.
+
 ## In-session adaptation
 
 The relevant bandwidth is the local Wi-Fi Direct link, not internet speed.
 Every two seconds, media reports queue overload after videorate and loss from
-fresh RTCP reports about the transmitted SSRC. The RTCP socket accepts only the
-negotiated IP and port. Malformed packets, other SSRCs, and repeated/out-of-order
+fresh RTCP reports about the transmitted SSRC. Sender metadata restricts incoming
+RTCP to the RTSP peer's IP before telemetry and rtpbin. SETUP specifies the TV's
+receive port; feedback may originate from another port on that same IP. Missing
+sender metadata and other IPs are rejected. Outgoing RTCP still uses the negotiated
+destination port. Malformed packets, other SSRCs, and repeated/out-of-order
 reports do not feed the controller. The GUI's RTP packet counter remains a
 packet counter, not an FPS or bandwidth measurement. The GUI separately shows
 H.264 access-unit FPS encoded on the laptop and local queue drops. This does
@@ -147,4 +191,5 @@ TV testing; modes above Full HD still need compatible-hardware validation.
 References: [Miracast Specification v2.3](https://www.wi-fi.org/system/files/Miracast_Specification_v2.3.pdf)
 (Wi-Fi Alliance, 2024), §§4.10.3.2, 5.4.1, 6.1.13, and 6.1.22; NetworkManager
 D-Bus IP4Config/ActiveConnection, GStreamer mpegtsmux/rtpbin, and gstreamer-rs 0.25 /
-gio 0.22. No GPL code from another Miracast source was copied.
+gio 0.22; [RFC 2326 §12.39](https://www.rfc-editor.org/rfc/rfc2326.html#section-12.39)
+for Transport receive ports. No GPL code from another Miracast source was copied.
