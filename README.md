@@ -47,7 +47,6 @@ Both the backend and the graphical frontend are written in Rust.
 | --- | --- | --- |
 | Backend | Rust, Edition 2024 | Tokio, NetworkManager/D-Bus through zbus, ScreenCast Portal through ashpd, GStreamer |
 | Frontend | Rust and GTK CSS | GTK4 through gtk-rs, GLib main loop, native widgets, theme-aware styling |
-| Packaging helper | Python 3.11+ | Generates pinned Cargo sources for local Flatpak builds |
 
 GTK runs on the main thread; the Tokio backend runs separately and communicates
 with the UI through typed messages. GStreamer handles video processing and
@@ -58,9 +57,8 @@ and coordination. See [ARCHITECTURE.md](ARCHITECTURE.md).
 ## Get the app
 
 The MVP is currently available as **source code**. There is no official prebuilt
-installer or published Flathub package yet. To use it now, download the source
-and follow the native build instructions below. A local experimental Flatpak
-build is also available as a packaging workflow.
+installer yet. To use it now, download the source and follow the native build
+instructions below.
 
 On this project's GitHub page, choose **Code → Download ZIP** and extract the
 archive. For development, copy the clone URL from **Code**, replace
@@ -207,39 +205,15 @@ from physical validation.
 dependencies) and GitHub Actions weekly and opens update pull requests. To activate
 it, commit the configuration to the repository's default branch on GitHub.
 
-When a pull request changes `Cargo.lock`, regenerate the offline Flatpak source
-list and commit `flatpak/cargo-sources.json` to the same branch:
-
-```sh
-python3 scripts/generate-cargo-sources.py
-```
-
-Dependabot does not run this project script. CI checks that the generated source
-list matches `Cargo.lock` before a dependency update is merged.
-
-## Local Flatpak build
-
-Flatpak packaging is experimental. Install flatpak-builder, configure Flathub,
-and install GNOME Platform/SDK 51 and the matching Rust stable SDK extension as
-described in [flatpak/README.md](flatpak/README.md). The source-generation helper
-requires Python 3.11 or newer. Then run:
-
-```sh
-python3 scripts/generate-cargo-sources.py
-flatpak-builder --user --install --force-clean build-dir flatpak/org.example.ViewHop.yml
-flatpak run org.example.ViewHop
-```
-
-The manifest builds pinned Cargo sources offline after downloading them. This
-is a local build/install workflow, not installation from a published Flathub
-listing. See [sandbox permissions](docs/FLATPAK.md) and the
-[validation report](docs/VALIDATION.md) for packaging status and tested paths.
+When a pull request updates dependencies, commit the resulting `Cargo.lock`
+changes to the same branch and run the development checks above. CI validates
+the native workspace with `--locked` so dependency resolution matches the lockfile.
 
 ## Next steps
 
 - Broaden interoperability testing across TVs, adapters, drivers, and desktops.
 - Validate real Wayland Portal/PipeWire capture, hardware encoders, higher
-  resolutions, and Flatpak builds on supported environments.
+  resolutions, and native builds on supported environments.
 - Improve latency, link stability, recovery, and adaptive video quality.
 - Add negotiated audio capture/streaming and A/V synchronization.
 - Provide a dedicated D-Bus API for optional desktop integrations.

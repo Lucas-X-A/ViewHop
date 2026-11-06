@@ -265,8 +265,8 @@ encoder settings, or adaptive bitrate thresholds were added or changed. RAM use
 was not benchmarked comparatively.
 The default workspace suite passed 53 tests, with ten environment-dependent tests
 ignored. Workspace check, Clippy with warnings denied, formatting, and the native
-app build passed. Flatpak sources match the lockfile; only the two new binding
-crates were added, with no existing package version changes.
+app build passed. Only the two new binding crates were added to Cargo.lock,
+with no existing package version changes.
 
 UFW remains unchanged. A physical retest with a narrowly allowed RTCP return path
 must verify valid reports and whether the TV's stutters improve. Missing feedback

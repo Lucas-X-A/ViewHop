@@ -362,7 +362,6 @@ mod tests {
             desktop: "test".into(),
             x11_display: Some(":0".into()),
             pipewire_socket_visible: false,
-            flatpak: false,
         };
         assert!(matches!(
             X11CaptureBackend { environment }

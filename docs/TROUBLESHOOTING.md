@@ -4,8 +4,9 @@ Run `wireless-display --diagnostics`. No GTK window is required.
 
 **Wi-Fi P2P not detected:** verify adapter/driver support and whether
 NetworkManager manages the device. DeviceType 30 identifies WifiP2P; a regular
-Wi-Fi interface does not prove P2P support. In Flatpak, check the specific NM
-service permission. Do not run as root or disable Polkit to bypass authorization errors.
+Wi-Fi interface does not prove P2P support. Check that NetworkManager is running
+and the user is authorized through Polkit. Do not run as root or disable Polkit
+to bypass authorization errors.
 
 **Portal without ScreenCast:** install the backend appropriate for the compositor.
 Having xdg-desktop-portal or xdg-desktop-portal-gtk does not guarantee the ScreenCast
@@ -14,17 +15,16 @@ selection does not activate another backend. An available portal with an operati
 failure is reported as an error rather than ignoring the user's choice.
 
 **PipeWire unavailable:** diagnostics check socket visibility, not video consumption.
-In Flatpak the socket may be invisible while capture still works through the
-restricted FD. The frame counter after monitor selection proves consumption.
+Portal capture uses a restricted FD. The frame counter after monitor selection
+proves consumption.
 Install the `pipewiresrc` plugin if missing.
 
 **Source removed/monitor disconnected:** GstBus errors/EOS or Portal Closed end
 capture. No first frame within 15 seconds causes a timeout. Select the source
 again; this version does not reconnect automatically.
 
-**ximagesrc missing:** install gst-plugins-good for a native build. Flatpak builds
-the plugin explicitly because the GNOME runtime does not provide it. This plugin
-is never selected on Wayland, even with XWayland active.
+**ximagesrc missing:** install gst-plugins-good. This plugin is never selected on
+Wayland, even with XWayland active.
 
 **No H.264 encoder:** this does not prevent the UI, discovery, or fakesink capture.
 EncoderSelector enumerates factories. Before connecting, streaming tests encoding

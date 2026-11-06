@@ -61,12 +61,6 @@ pub async fn collect(environment: &DesktopEnvironment) -> SystemCapabilities {
         caps.limitations
             .push("Wi-Fi Direct not detected; TV discovery/transport unavailable.".into());
     }
-    if environment.flatpak && caps.network_manager_version.is_none() {
-        caps.limitations.push(
-            wireless_display_platform::environment::FlatpakEnvironmentError::NetworkManagerAccess
-                .to_string(),
-        );
-    }
     caps.limitations
         .push("Experimental WFD/RTSP video over MPEG-TS/RTP UDP. Audio, HDCP, TCP, and UIBC are not enabled yet.".into());
     caps

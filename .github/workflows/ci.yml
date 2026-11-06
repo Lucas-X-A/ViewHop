@@ -20,7 +20,3 @@ jobs:
       - run: xvfb-run -a dbus-run-session --config-file=crates/app/tests/session-bus.conf -- cargo test -p wireless-display-app --test x11_fallback -- --ignored
       - run: xvfb-run -a cargo test -p wireless-display-media --test x11_capture -- --ignored
       - run: dbus-run-session --config-file=crates/app/tests/session-bus.conf -- cargo test -p wireless-display-platform --lib on_dbus -- --ignored --test-threads=1
-      - name: Check offline source list
-        run: |
-          python3 scripts/generate-cargo-sources.py
-          git diff --exit-code -- flatpak/cargo-sources.json

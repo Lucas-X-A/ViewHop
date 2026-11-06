@@ -6,7 +6,7 @@ No code from GNOME Network Displays has been incorporated.
 Rust dependencies retain their licenses; consult the manifests of the versions
 pinned in Cargo.lock (`cargo metadata --format-version=1` includes the `license`
 and `license_file` fields). GTK, GLib, GStreamer, and PipeWire are native libraries
-with their own terms, usually LGPL; the bundled ximagesrc plugin comes from
+with their own terms, usually LGPL; the ximagesrc plugin comes from
 gst-plugins-good, LGPL-2.1-or-later. Dynamic linking does not change the license
 of our source code. Distributors must preserve notices, provide any required
 source code, and check the licenses of the plugins they actually distribute.

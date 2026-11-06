@@ -96,7 +96,7 @@ This does not authorize a TV connection or capture of the user's screen.
    capabilities without personal data. Audio is not expected in this version.
 8. Stop, disconnect, close during activation/negotiation, and stop Screen Share
    on the TV. Check cleanup of protocol, pipeline, portal, and temporary profile.
-9. Repeat inside Flatpak and on GNOME/KDE/Cinnamon as backends are available.
+9. Repeat on GNOME/KDE/Cinnamon as backends are available.
 
 Do not automate portal-selection approval or change host network settings in CI.
 Real integration steps can only be considered passed with appropriate

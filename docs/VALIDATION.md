@@ -13,8 +13,8 @@ NetworkManager discovery, WFD classification, initial P2P activation, ScreenCast
 Portal with a restricted FD, PipeWire/GStreamer, X11 fallback, an RTSP
 parser/serializer/transport, and the WFD foundation.
 
-A Flatpak manifest, 146 pinned Cargo sources for offline builds, icon, desktop
-entry, AppStream metadata, MIT license, documentation, and CI workflow were added.
+An icon, desktop entry, AppStream metadata, MIT license, documentation, and CI
+workflow were added.
 Miracast transmission and audio are not implemented at this milestone.
 
 ## Architecture
@@ -44,7 +44,6 @@ sources are allowed; a 15-second timeout bounds the wait for the first frame.
 | GStreamer pipeline | [pipeline.rs](../crates/media/src/pipeline.rs) |
 | Encoders | [encoder.rs](../crates/media/src/encoder.rs) |
 | RTSP / WFD | [protocol/wfd](../crates/core/src/protocol/wfd/) |
-| Flatpak | [org.example.WirelessDisplay.yml](../flatpak/org.example.WirelessDisplay.yml) |
 
 ## Tests run
 
@@ -94,22 +93,12 @@ Other checks:
 - Real `--dummy` binary opened in Xvfb through a Python subprocess; SIGTERM sent
   after two seconds: exit 0 and `Cooperative shutdown complete` confirmed with
   `RUST_LOG=wireless_display=info`.
-- `python3 scripts/generate-cargo-sources.py`: 146 crates; coverage checked against
-  Cargo.lock. SHA-256 was verified for all 146 cached .crate archives, which were
-  extracted according to the manifest into `/tmp/wireless-display-offline`.
-- `cargo metadata --locked --offline --config /tmp/wireless-display-offline/cargo/config.toml --format-version 1`:
-  exit 0, complete resolution through vendored sources without network access.
-- `flatpak-builder --show-manifest flatpak/org.example.WirelessDisplay.yml`:
-  exit 0; YAML and Cargo source list read by builder 1.4.2.
 - `desktop-file-validate data/org.example.WirelessDisplay.desktop`: exit 0.
 - `appstreamcli validate --no-net data/org.example.WirelessDisplay.metainfo.xml`:
   one warning for the undefined homepage. Validation with
   `--override=url-homepage-missing=info` passed with one informational message.
   This exception serves the local project with a provisional identity;
   publication requires a real URL.
-- `flatpak-builder --disable-download --force-clean build-dir flatpak/org.example.WirelessDisplay.yml`:
-  did not build; `org.gnome.Sdk/x86_64/51 not installed`. The SDK was not installed
-  on the host, and no Flatpak package was presented as build-validated.
 
 ## Actual functionality
 
@@ -122,17 +111,15 @@ Other checks:
 | PipeWire | Socket and pipewiresrc detected; portal-stream consumption not proven in this environment |
 | X11 fallback | Tested end to end with no portal, X11 backend, and real Xvfb frames; did not access the user's personal screen |
 | Wayland protection | Tests confirm fallback rejection, including a GDK X11/XWayland hint |
-| Flatpak | Manifest read by builder and offline sources verified; package not built because the SDK was missing |
 | Miracast to TV | Not yet implemented; no WFD M1–M7, H.264/MPEG-TS/RTP, or receiver audio |
 
-The executable foundation was delivered; physical Portal/PipeWire validation and
-Flatpak build criteria remain pending. There is no claim that an LG TV or another
-receiver received video.
+The executable foundation was delivered; physical Portal/PipeWire validation
+remains pending. There is no claim that an LG TV or another receiver received video.
 
 ## Next milestone
 
-Validate Portal/PipeWire on a desktop with ScreenCast and build Flatpak with SDK
-51. Then validate P2P activation with a TV, obtain actual group IP/routes, observe
+Validate Portal/PipeWire on a desktop with ScreenCast. Then validate P2P
+activation with a TV, obtain actual group IP/routes, observe
 connection loss, implement WFD M1–M7 negotiation, and select receiver caps/ports.
 Build low-latency H.264 over MPEG-TS/RTP, implement keepalive/teardown, and test
 first video on LG webOS. Enable negotiated audio only after that proof.
@@ -286,8 +273,7 @@ OpenH264 emitted `cmInitParaError` when finalizing probes on this host. Tests
 confirmed encoded buffers and decoded frames; the warning was not hidden.
 
 Other checks passed: valid desktop entry, valid AppStream with the previously
-documented informational exception for a provisional homepage, and Flatpak source
-regeneration with 146 pinned crates. Flatpak **was not built**: SDK 51 remains absent.
+documented informational exception for a provisional homepage.
 
 ### Actual functionality and next test
 
@@ -298,7 +284,7 @@ not yet been validated at this stage**.
 
 X11 was validated on a virtual display. ScreenCast Portal/PipeWire remain
 implemented without physical proof on this Cinnamon desktop, which does not
-provide ScreenCast. Real Wayland and Flatpak build/execution also remain pending.
+provide ScreenCast. Real Wayland validation also remains pending.
 
 For the next test, close the old binary, open Screen Share on the TV, start
 `target/debug/wireless-display`, search again, and click Share screen. Confirm
@@ -451,7 +437,6 @@ portal path requests a new restricted remote in the same session/D-Bus connectio
 Loss-based adaptation depends on RTCP negotiated in SETUP; without feedback,
 bitrate remains conservative and only local overload can request 720p. The TV
 can reject renegotiation; this is reported without changing the format unilaterally.
-Flatpak was not rebuilt at this stage.
 
 ## Smoothness and the 720p/60 fps option — 2026-10-24
 
@@ -602,8 +587,8 @@ existing default English comment.
 
 A source comparison confirmed that only string contents and rustfmt layout
 changed in Rust: control flow, identifiers, protocol values, and formatting
-placeholders were preserved. Cargo manifests, Cargo.lock, dependency versions,
-and Flatpak source definitions were unchanged.
+placeholders were preserved. Cargo manifests, Cargo.lock, and dependency versions
+were unchanged.
 
 Verification:
 

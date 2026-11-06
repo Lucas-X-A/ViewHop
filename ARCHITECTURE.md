@@ -263,11 +263,11 @@ Blocking probes check cancellation cooperatively and are normally awaited;
 aborting an async task cannot forcibly stop an already running native call or
 spawn_blocking closure. Dropping a live JoinHandle is not a normal shutdown mechanism.
 
-## Identity and packaging
+## Identity and native execution
 
 APP_NAME and APP_ID are in [core/src/lib.rs](crates/core/src/lib.rs).
 Renaming also requires synchronizing
-names/content in data/, the Flatpak manifest, and metadata tests. Services do not
+names/content in data/ and metadata tests. Services do not
 hard-code a distribution or compositor name. A future D-Bus API can translate
 methods into AppCommand and observe AppEvent without coupling widgets.
 
@@ -277,12 +277,11 @@ The README presents the project as ViewHop, while APP_NAME is still
 The `--diagnostics` entry point creates its own Tokio runtime and reports
 capabilities without constructing a GTK application.
 
-The Flatpak manifest uses the GNOME 51 runtime as a library distribution, without
-requiring GNOME on the host. It grants network/IPC, Wayland/fallback-X11, DRI,
-and specific system-bus access to NetworkManager. Capture authorization remains
-with the desktop portal. Cargo.lock and generated Flatpak vendor sources pin
-Rust dependencies for offline builds. Native GPU availability also depends on
-runtime/driver extensions; there is no mandatory VA/CUDA Rust dependency.
+The application builds and runs natively against the host's GTK and GStreamer
+libraries. Cargo.lock pins Rust dependencies. NetworkManager/Polkit control
+network authorization, and the desktop portal controls capture authorization.
+Native GPU availability depends on installed plugins and compatible drivers;
+there is no mandatory VA/CUDA Rust dependency.
 
 AudioCapture currently reports capabilities only. Audio streaming, HDCP, UIBC,
 IPv6 WFD, TCP media transport, automatic reconnection, and an exported application

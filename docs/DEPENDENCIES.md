@@ -36,7 +36,7 @@ VA-API), or cudaupload plus cudaconvertscale (NVENC). These factories and compat
 GPU memory caps must be available and pass the live preflight. Older GStreamer
 versions or systems without the plugins retain CPU conversion/scaling and software
 encoding alternatives. No new Rust dependency or CPU-specific compiler flag is
-required. Hardware inside Flatpak also depends on the runtime/driver extensions.
+required. Hardware acceleration also depends on compatible host drivers.
 
 Documentation consulted:
 
@@ -50,9 +50,8 @@ Documentation consulted:
 - https://networkmanager.dev/docs/api/latest/gdbus-org.freedesktop.NetworkManager.Device.WifiP2P.html
 - https://networkmanager.dev/docs/api/latest/gdbus-org.freedesktop.NetworkManager.WifiP2PPeer.html
 - https://networkmanager.dev/docs/api/latest/settings-wifi-p2p.html
-- https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html
 - https://gitlab.freedesktop.org/pipewire/pipewire/-/blob/master/src/gst/gstpipewiresrc.c
 
-The installed GNOME 51 runtime was inspected: Freedesktop 26.08 base, GStreamer
-1.28.6, and the PipeWire plugin present; ximagesrc is not included. The manifest
-provides that plugin through gst-plugins-good.
+For native capture, install the PipeWire GStreamer plugin for portal streams and
+gst-plugins-good for the X11-only ximagesrc fallback. Package names vary by
+distribution; see [README.md](../README.md) for native dependency commands.
