@@ -18,7 +18,7 @@ gst-net = { package = "gstreamer-net", version = "0.25.0", features = ["v1_22"] 
 gio = "0.22.10"
 ashpd = { version = "0.13.13", default-features = false, features = ["tokio", "screencast"] }
 # ashpd 0.13 uses zbus 5.x. Keep one D-Bus type family.
-zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }
+zbus = { version = "6.2.0", default-features = false, features = ["tokio"] }
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "sync", "time", "net", "io-util", "macros", "signal"] }
 tokio-util = { version = "0.7.20", features = ["rt"] }
 async-channel = "2.5.0"
