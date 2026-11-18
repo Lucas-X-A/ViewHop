@@ -1,6 +1,7 @@
 use async_channel::Sender;
 use futures_util::StreamExt;
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroUsize;
 use std::time::Duration;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -10,14 +11,13 @@ use wireless_display_core::traits::{DeviceDiscovery, P2pConnector};
 use wireless_display_core::{
     DeviceId, DiscoveryEvent, ModelError, PeerType, WfdCapability, WirelessDisplayDevice,
 };
-use zbus::Connection;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str, Value};
+use zbus::{Connection, OwnedObjectPath, OwnedVariant, Str, Variant};
 
 const NM: &str = "org.freedesktop.NetworkManager";
 const ROOT: &str = "/org/freedesktop/NetworkManager";
 const DBUS_TIMEOUT: Duration = Duration::from_secs(8);
 
-type Settings = HashMap<String, HashMap<String, OwnedValue>>;
+type Settings = HashMap<String, HashMap<String, OwnedVariant>>;
 
 #[zbus::proxy(
     interface = "org.freedesktop.NetworkManager",
@@ -33,11 +33,11 @@ trait Manager {
         connection: Settings,
         device: OwnedObjectPath,
         specific_object: OwnedObjectPath,
-        options: HashMap<String, OwnedValue>,
+        options: HashMap<String, OwnedVariant>,
     ) -> zbus::Result<(
         OwnedObjectPath,
         OwnedObjectPath,
-        HashMap<String, OwnedValue>,
+        HashMap<String, OwnedVariant>,
     )>;
     fn deactivate_connection(&self, active_connection: OwnedObjectPath) -> zbus::Result<()>;
 }
@@ -62,7 +62,7 @@ trait Device {
     default_service = "org.freedesktop.NetworkManager"
 )]
 trait WifiP2p {
-    fn start_find(&self, options: HashMap<String, OwnedValue>) -> zbus::Result<()>;
+    fn start_find(&self, options: HashMap<String, OwnedVariant>) -> zbus::Result<()>;
     fn stop_find(&self) -> zbus::Result<()>;
     #[zbus(property)]
     fn peers(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
@@ -104,7 +104,7 @@ trait Active {
 )]
 trait Ip4Config {
     #[zbus(property)]
-    fn address_data(&self) -> zbus::Result<Vec<HashMap<String, OwnedValue>>>;
+    fn address_data(&self) -> zbus::Result<Vec<HashMap<String, OwnedVariant>>>;
     #[zbus(property)]
     fn gateway(&self) -> zbus::Result<String>;
 }
@@ -113,8 +113,6 @@ trait Ip4Config {
 pub enum NetworkError {
     #[error("NetworkManager/D-Bus: {0}")]
     Dbus(#[from] zbus::Error),
-    #[error("Invalid D-Bus value: {0}")]
-    Value(#[from] zbus::zvariant::Error),
     #[error(transparent)]
     Model(#[from] ModelError),
     #[error("No Wi-Fi Direct interface detected")]
@@ -242,7 +240,7 @@ impl NetworkManagerService {
             let mut devices = Vec::new();
             for path in manager.get_devices().await? {
                 let device = DeviceProxy::builder(&self.bus)
-                    .path(path.clone())?
+                    .path(path.clone())
                     .build()
                     .await?;
                 devices.push((
@@ -282,7 +280,7 @@ impl NetworkManagerService {
     ) -> Result<WirelessDisplayDevice, NetworkError> {
         bounded(async {
             let proxy = PeerProxy::builder(&self.bus)
-                .path(path.clone())?
+                .path(path.clone())
                 .build()
                 .await?;
             let name = proxy.name().await?;
@@ -317,7 +315,7 @@ impl NetworkManagerService {
         let path = OwnedObjectPath::try_from(selected.id.as_str())?;
         bounded(async {
             let proxy = WifiP2pProxy::builder(&self.bus)
-                .path(adapter.clone())?
+                .path(adapter.clone())
                 .build()
                 .await?;
             if !proxy.peers().await?.contains(&path) {
@@ -325,11 +323,10 @@ impl NetworkManagerService {
             }
             let current = match self.peer(&path, &adapter).await {
                 // A peer can expire between reading Peers and its properties.
-                Err(NetworkError::Dbus(zbus::Error::MethodError(name, _, _)))
+                Err(NetworkError::Dbus(zbus::Error::FDO(error)))
                     if matches!(
-                        name.as_str(),
-                        "org.freedesktop.DBus.Error.UnknownObject"
-                            | "org.freedesktop.DBus.Error.UnknownInterface"
+                        error.as_ref(),
+                        zbus::fdo::Error::UnknownObject(_) | zbus::fdo::Error::UnknownInterface(_)
                     ) =>
                 {
                     return Err(NetworkError::PeerUnavailable);
@@ -349,7 +346,7 @@ impl NetworkManagerService {
         cancel: CancellationToken,
     ) -> Result<(), NetworkError> {
         let proxy = WifiP2pProxy::builder(&self.bus)
-            .path(path.clone())?
+            .path(path.clone())
             .build()
             .await?;
         // Subscribe before listing peers or starting discovery to avoid lost additions.
@@ -366,19 +363,19 @@ impl NetworkManagerService {
                 .map_err(zbus::Error::from)?;
             let rule = zbus::MatchRule::builder()
                 .msg_type(zbus::message::Type::Signal)
-                .sender(owner.as_str())?
-                .interface("org.freedesktop.DBus.Properties")?
-                .member("PropertiesChanged")?
-                .add_arg("org.freedesktop.NetworkManager.WifiP2PPeer")?
-                .build();
-            Ok(zbus::MessageStream::for_match_rule(rule, &self.bus, Some(64)).await?)
+                .sender(owner)
+                .interface("org.freedesktop.DBus.Properties")
+                .member("PropertiesChanged")
+                .add_arg("org.freedesktop.NetworkManager.WifiP2PPeer")
+                .build()?;
+            Ok(zbus::MessageStream::for_match_rule(rule, &self.bus, NonZeroUsize::new(64)).await?)
         })
         .await?;
         bounded(async {
             proxy
                 .start_find(HashMap::from([(
                     "timeout".into(),
-                    OwnedValue::from(120i32),
+                    OwnedVariant::from(120i32),
                 )]))
                 .await?;
             Ok(())
@@ -496,7 +493,7 @@ impl P2pConnection {
     pub async fn network(&self, cancel: &CancellationToken) -> Result<P2pNetwork, NetworkError> {
         let ready = async {
             let active = ActiveProxy::builder(&self.bus)
-                .path(self.active.clone())?
+                .path(self.active.clone())
                 .build()
                 .await?;
             // Activation and publication of AddressData are separate D-Bus updates.
@@ -517,7 +514,7 @@ impl P2pConnection {
                     continue;
                 }
                 let config = Ip4ConfigProxy::builder(&self.bus)
-                    .path(path.clone())?
+                    .path(path.clone())
                     .build()
                     .await?;
                 let mut address_changes = config.receive_address_data_changed().await;
@@ -562,14 +559,14 @@ impl P2pConnection {
         cancel: CancellationToken,
     ) -> Result<(), NetworkError> {
         let active = ActiveProxy::builder(&self.bus)
-            .path(self.active.clone())?
+            .path(self.active.clone())
             .build()
             .await?;
         let mut state_changes = active.receive_state_changed().await;
         let mut config_changes = active.receive_ip4_config_changed().await;
         let path = active.ip4_config().await?;
         let config = Ip4ConfigProxy::builder(&self.bus)
-            .path(path.clone())?
+            .path(path.clone())
             .build()
             .await?;
         let mut address_changes = config.receive_address_data_changed().await;
@@ -616,7 +613,7 @@ impl P2pConnection {
 }
 
 fn parse_ip4_config(
-    addresses: Vec<HashMap<String, OwnedValue>>,
+    addresses: Vec<HashMap<String, OwnedVariant>>,
     gateway: &str,
 ) -> Result<P2pNetwork, NetworkError> {
     if addresses.len() != 1 {
@@ -663,8 +660,8 @@ fn parse_ip4_config(
     Ok(network)
 }
 
-fn string(value: &str) -> OwnedValue {
-    OwnedValue::from(Str::from(value))
+fn string(value: &str) -> OwnedVariant {
+    OwnedVariant::from(Str::from(value))
 }
 
 pub fn connection_settings(peer: &WirelessDisplayDevice) -> Result<Settings, NetworkError> {
@@ -674,7 +671,7 @@ pub fn connection_settings(peer: &WirelessDisplayDevice) -> Result<Settings, Net
             HashMap::from([
                 ("id".into(), string("WirelessDisplay temporary")),
                 ("type".into(), string("wifi-p2p")),
-                ("autoconnect".into(), OwnedValue::from(false)),
+                ("autoconnect".into(), OwnedVariant::from(false)),
             ]),
         ),
         (
@@ -683,7 +680,7 @@ pub fn connection_settings(peer: &WirelessDisplayDevice) -> Result<Settings, Net
                 ("peer".into(), string(&peer.mac.to_string())),
                 (
                     "wfd-ies".into(),
-                    Value::new(SOURCE_WFD_IES.to_vec()).try_to_owned()?,
+                    Variant::new(SOURCE_WFD_IES.to_vec()).try_into_owned()?,
                 ),
             ]),
         ),
@@ -715,7 +712,7 @@ impl P2pConnector for NetworkManagerService {
             let bus = Connection::system().await?;
             let manager = ManagerProxy::new(&bus).await?;
             let device = DeviceProxy::builder(&bus)
-                .path(peer.adapter_id.as_str())?
+                .path(peer.adapter_id.as_str())
                 .build()
                 .await?;
             // Subscribe before activation so a fast failed -> disconnected
@@ -734,7 +731,7 @@ impl P2pConnector for NetworkManagerService {
                 )
                 .await?;
             let proxy = ActiveProxy::builder(&bus)
-                .path(active.clone())?
+                .path(active.clone())
                 .build()
                 .await?;
             let mut changes = proxy.receive_state_changed().await;
@@ -805,7 +802,7 @@ mod tests {
 
     #[zbus::interface(name = "org.freedesktop.NetworkManager.Device.WifiP2P")]
     impl DiscoveryAdapter {
-        fn start_find(&self, _options: HashMap<String, OwnedValue>) {}
+        fn start_find(&self, _options: HashMap<String, OwnedVariant>) {}
 
         fn stop_find(&self) {
             self.stops.fetch_add(1, Ordering::Relaxed);
@@ -863,9 +860,7 @@ mod tests {
         let peer_path = OwnedObjectPath::try_from("/test/peer").unwrap();
         let stops = Arc::new(AtomicUsize::new(0));
         let server = zbus::connection::Builder::session()
-            .unwrap()
             .name(NM)
-            .unwrap()
             .serve_at(
                 "/test/adapter",
                 DiscoveryAdapter {
@@ -873,11 +868,8 @@ mod tests {
                     stops: stops.clone(),
                 },
             )
-            .unwrap()
             .serve_at("/test/peer", DiscoveryPeer::default())
-            .unwrap()
             .serve_at("/test/unrelated", DiscoveryPeer::default())
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -992,7 +984,7 @@ mod tests {
         let address = || {
             vec![HashMap::from([
                 ("address".into(), string("192.168.49.2")),
-                ("prefix".into(), OwnedValue::from(24u32)),
+                ("prefix".into(), OwnedVariant::from(24u32)),
             ])]
         };
         let network = parse_ip4_config(address(), "192.168.49.1").unwrap();
@@ -1037,12 +1029,12 @@ mod tests {
     #[zbus::interface(name = "org.freedesktop.NetworkManager.IP4Config")]
     impl GroupNetwork {
         #[zbus(property)]
-        fn address_data(&self) -> Vec<HashMap<String, OwnedValue>> {
+        fn address_data(&self) -> Vec<HashMap<String, OwnedVariant>> {
             self.address
                 .map(|address| {
                     vec![HashMap::from([
                         ("address".into(), string(address)),
-                        ("prefix".into(), OwnedValue::from(24u32)),
+                        ("prefix".into(), OwnedVariant::from(24u32)),
                     ])]
                 })
                 .unwrap_or_default()
@@ -1058,18 +1050,14 @@ mod tests {
     #[ignore = "requires an isolated D-Bus session; never uses the system bus"]
     async fn active_group_network_is_read_and_monitored_on_dbus() {
         let _server = zbus::connection::Builder::session()
-            .unwrap()
             .name(NM)
-            .unwrap()
             .serve_at("/test/active", ActiveNetwork::default())
-            .unwrap()
             .serve_at(
                 "/test/ip4",
                 GroupNetwork {
                     address: Some("192.168.49.10"),
                 },
             )
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -1100,13 +1088,9 @@ mod tests {
     #[ignore = "requires an isolated D-Bus session; never uses the system bus"]
     async fn active_group_waits_for_addresses_on_dbus() {
         let server = zbus::connection::Builder::session()
-            .unwrap()
             .name(NM)
-            .unwrap()
             .serve_at("/test/active", ActiveNetwork::default())
-            .unwrap()
             .serve_at("/test/ip4", GroupNetwork { address: None })
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -1185,9 +1169,7 @@ mod tests {
     #[ignore = "requires an isolated D-Bus session; never uses the system bus"]
     async fn active_group_waits_for_config_and_observes_loss_on_dbus() {
         let server = zbus::connection::Builder::session()
-            .unwrap()
             .name(NM)
-            .unwrap()
             .serve_at(
                 "/test/active",
                 ActiveNetwork {
@@ -1195,14 +1177,12 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .unwrap()
             .serve_at(
                 "/test/ip4",
                 GroupNetwork {
                     address: Some("192.168.49.10"),
                 },
             )
-            .unwrap()
             .build()
             .await
             .unwrap();
@@ -1297,11 +1277,8 @@ mod tests {
     #[ignore = "requires an isolated D-Bus session; never uses the system bus"]
     async fn expired_discovery_result_is_rejected_on_dbus() {
         let _server = zbus::connection::Builder::session()
-            .unwrap()
             .name(NM)
-            .unwrap()
             .serve_at("/test/adapter", NoPeers)
-            .unwrap()
             .build()
             .await
             .unwrap();

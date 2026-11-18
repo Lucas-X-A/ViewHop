@@ -8,8 +8,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use wireless_display_core::traits::{CaptureBackend, CaptureLease};
 use wireless_display_core::{CaptureInfo, CaptureKind, CaptureRequest, CaptureSource, SessionType};
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str};
-use zbus::{Connection, Proxy};
+use zbus::{Connection, OwnedObjectPath, OwnedVariant, Proxy, Str};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PortalError {
@@ -17,8 +16,6 @@ pub enum PortalError {
     Portal(#[from] ashpd::Error),
     #[error("ScreenCast D-Bus: {0}")]
     Dbus(#[from] zbus::Error),
-    #[error("Invalid portal response: {0}")]
-    Value(#[from] zbus::zvariant::Error),
     #[error("Display selection cancelled")]
     Cancelled,
     #[error("The portal does not provide monitor capture")]
@@ -41,14 +38,14 @@ impl PortalError {
     fn unavailable(&self) -> bool {
         match self {
             Self::Portal(ashpd::Error::PortalNotFound(_)) | Self::Unsupported => true,
-            Self::Portal(ashpd::Error::Zbus(zbus::Error::MethodError(name, _, _))) => matches!(
-                name.as_str(),
-                "org.freedesktop.DBus.Error.ServiceUnknown"
-                    | "org.freedesktop.DBus.Error.NameHasNoOwner"
-                    | "org.freedesktop.DBus.Error.UnknownObject"
-                    | "org.freedesktop.DBus.Error.UnknownInterface"
-                    | "org.freedesktop.DBus.Error.UnknownMethod"
-                    | "org.freedesktop.DBus.Error.UnknownProperty"
+            Self::Portal(ashpd::Error::Zbus(zbus::Error::FDO(error))) => matches!(
+                error.as_ref(),
+                zbus::fdo::Error::ServiceUnknown(_)
+                    | zbus::fdo::Error::NameHasNoOwner(_)
+                    | zbus::fdo::Error::UnknownObject(_)
+                    | zbus::fdo::Error::UnknownInterface(_)
+                    | zbus::fdo::Error::UnknownMethod(_)
+                    | zbus::fdo::Error::UnknownProperty(_)
             ),
             _ => false,
         }
@@ -125,17 +122,17 @@ impl PortalCaptureBackend {
             let portal = Screencast::new().await?;
             let types = portal.available_source_types().await?;
             let mut source_types = Vec::new();
-            if types.contains(SourceType::Monitor) {
+            if types.contains(SourceType::MONITOR) {
                 source_types.push("Monitor".into());
             }
-            if types.contains(SourceType::Window) {
+            if types.contains(SourceType::WINDOW) {
                 source_types.push("Window".into());
             }
             Ok(PortalCapabilities {
                 available: true,
                 version: Some(portal.version()),
                 source_types,
-                monitor: types.contains(SourceType::Monitor),
+                monitor: types.contains(SourceType::MONITOR),
             })
         })
         .await
@@ -151,10 +148,10 @@ struct PortalStream {
 }
 
 fn stream_from_results(
-    mut values: HashMap<String, OwnedValue>,
+    mut values: HashMap<String, OwnedVariant>,
 ) -> Result<PortalStream, PortalError> {
     let streams = values.remove("streams").ok_or(PortalError::NoStream)?;
-    let streams = Vec::<(u32, HashMap<String, OwnedValue>)>::try_from(streams)?;
+    let streams = Vec::<(u32, HashMap<String, OwnedVariant>)>::try_from(streams)?;
     if streams.len() != 1 {
         return Err(PortalError::NoStream);
     }
@@ -173,7 +170,7 @@ fn stream_from_results(
     Ok(PortalStream { node, serial, size })
 }
 
-/// ashpd 0.13's typed Streams discards the ScreenCast v6 pipewire-serial.
+/// ashpd 0.14.0 expects `pipewire_serial`, but ScreenCast v6 sends `pipewire-serial`.
 /// Keep ashpd session/source/FD handling and decode Start's dictionary here.
 /// Subscribe to the exact request path before invoking Start (portal protocol).
 async fn start_with_serial(
@@ -202,13 +199,20 @@ async fn start_with_serial(
     )
     .await?;
     let mut responses = request.receive_signal("Response").await?;
-    let options = HashMap::from([("handle_token", OwnedValue::from(Str::from(token.as_str())))]);
+    let options = HashMap::from([(
+        "handle_token",
+        OwnedVariant::from(Str::from(token.as_str())),
+    )]);
     let actual: OwnedObjectPath = portal.call("Start", &(session, "", options)).await?;
     if actual.as_str() != path {
         return Err(PortalError::NoStream);
     }
     let message = responses.next().await.ok_or(PortalError::NoStream)?;
-    let (code, results): (u32, HashMap<String, OwnedValue>) = message.body().deserialize()?;
+    decode_start_response(&message)
+}
+
+fn decode_start_response(message: &zbus::Message) -> Result<PortalStream, PortalError> {
+    let (code, results): (u32, HashMap<String, OwnedVariant>) = message.body().deserialize()?;
     match code {
         0 => stream_from_results(results),
         1 => Err(PortalError::Cancelled),
@@ -229,7 +233,7 @@ impl CaptureBackend for PortalCaptureBackend {
         let setup = async {
             let portal = Screencast::with_connection(Connection::session().await?).await?;
             let types = portal.available_source_types().await?;
-            if !types.contains(SourceType::Monitor) {
+            if !types.contains(SourceType::MONITOR) {
                 return Err(PortalError::Unsupported);
             }
             let session = portal.create_session(Default::default()).await?;
@@ -241,12 +245,12 @@ impl CaptureBackend for PortalCaptureBackend {
         };
         let select = async {
             let mut options = SelectSourcesOptions::default()
-                .set_sources(ashpd::enumflags2::BitFlags::from(SourceType::Monitor))
+                .set_sources(SourceType::MONITOR)
                 .set_multiple(false);
             if portal.version() >= 2 {
                 let modes = portal.available_cursor_modes().await?;
-                if modes.contains(CursorMode::Embedded) {
-                    options = options.set_cursor_mode(CursorMode::Embedded);
+                if modes.contains(CursorMode::EMBEDDED) {
+                    options = options.set_cursor_mode(CursorMode::EMBEDDED);
                 }
             }
             portal.select_sources(&session, options).await?.response()?;
@@ -353,6 +357,10 @@ mod tests {
         assert!(!PortalError::Cancelled.unavailable());
         assert!(!PortalError::Timeout.unavailable());
         assert!(!PortalError::Response(2).unavailable());
+        let portal_error =
+            |error: zbus::fdo::Error| PortalError::Portal(ashpd::Error::Zbus(error.into()));
+        assert!(portal_error(zbus::fdo::Error::ServiceUnknown(String::new())).unavailable());
+        assert!(!portal_error(zbus::fdo::Error::AccessDenied(String::new())).unavailable());
         assert!(PortalError::Unsupported.unavailable());
     }
     #[tokio::test]
@@ -372,14 +380,21 @@ mod tests {
     }
     #[test]
     fn reads_modern_serial_and_legacy_node_id() {
-        use zbus::zvariant::Value;
+        use zbus::Variant;
         for serial in [None, Some(123456u64)] {
             let mut props = HashMap::new();
             if let Some(serial) = serial {
-                props.insert("pipewire-serial".to_string(), OwnedValue::from(serial));
+                props.insert("pipewire-serial".to_string(), OwnedVariant::from(serial));
             }
-            let value = Value::new(vec![(42u32, props)]).try_to_owned().unwrap();
-            let result = stream_from_results(HashMap::from([("streams".into(), value)])).unwrap();
+            let value = Variant::new(vec![(42u32, props)]).try_into_owned().unwrap();
+            let response = zbus::Message::signal(
+                "/test/request",
+                "org.freedesktop.portal.Request",
+                "Response",
+            )
+            .build(&(0u32, HashMap::from([("streams", value)])))
+            .unwrap();
+            let result = decode_start_response(&response).unwrap();
             assert_eq!(result.node, 42);
             assert_eq!(result.serial, serial);
         }

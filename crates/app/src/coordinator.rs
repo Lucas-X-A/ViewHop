@@ -291,10 +291,8 @@ impl Coordinator {
             let (events, rx) = async_channel::bounded(128);
             let work = async {
                 if dummy {
-                    MockDeviceDiscovery
-                        .discover(events, child.clone())
-                        .await
-                        .map_err(|e| e.to_string())
+                    let Ok(()) = MockDeviceDiscovery.discover(events, child.clone()).await;
+                    Ok(())
                 } else {
                     NetworkManagerService::try_new()
                         .await
@@ -700,10 +698,7 @@ async fn capture_worker(
     let (source, info) = if let Some(lease) = &lease {
         (lease.source(), lease.info())
     } else {
-        let lease = MockCaptureBackend
-            .capture(request, cancel.clone())
-            .await
-            .map_err(|e| e.to_string())?;
+        let Ok(lease) = MockCaptureBackend.capture(request, cancel.clone()).await;
         (lease.source(), lease.info())
     };
     let session = lease.as_ref().and_then(SelectedCapture::portal_session);
